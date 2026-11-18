@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <AssemblyName>FSLTL-Downscaler</AssemblyName>
+    <RootNamespace>FsltlDownscaler.Gui</RootNamespace>
+    <AssemblyTitle>FSLTL Downscaler</AssemblyTitle>
+    <Description>Downscales FSLTL Traffic Base textures for MSFS 2024 and keeps layout.json in sync.</Description>
+    <ApplicationIcon>app.ico</ApplicationIcon>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="app.ico" LogicalName="app.ico" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\FsltlDownscaler.Core\FsltlDownscaler.Core.csproj" />
+  </ItemGroup>
+
+</Project>

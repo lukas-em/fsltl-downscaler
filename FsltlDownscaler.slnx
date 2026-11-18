@@ -1,0 +1,7 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/FsltlDownscaler.Core/FsltlDownscaler.Core.csproj" />
+    <Project Path="src/FsltlDownscaler.Cli/FsltlDownscaler.Cli.csproj" />
+    <Project Path="src/FsltlDownscaler.Gui/FsltlDownscaler.Gui.csproj" />
+  </Folder>
+</Solution>
