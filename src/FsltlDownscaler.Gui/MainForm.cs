@@ -93,7 +93,11 @@ internal sealed class MainForm : Form
                "No FSLTL content is distributed with this tool. Use at your own risk. Written with the help of AI.",
     };
 
+    private readonly ContextMenuStrip _packageMenu = new() { ShowImageMargin = false, ShowCheckMargin = true };
+
+    private IReadOnlyList<PackageCandidate> _candidates = [];
     private PackageContext? _pkg;
+    private string? _simulator;
     private ScanResult? _scan;
     private PackageStatus? _status;
     private Plan? _plan;
@@ -296,9 +300,13 @@ internal sealed class MainForm : Form
         HandleCreated += (_, _) => ApplyNativeTheme();
         _log.HandleCreated += (_, _) => NativeMethods.SetControlTheme(_log, _t.Dark);
         SystemEvents.UserPreferenceChanged += OnUserPreferenceChanged;
-        FormClosed += (_, _) => SystemEvents.UserPreferenceChanged -= OnUserPreferenceChanged;
+        FormClosed += (_, _) =>
+        {
+            SystemEvents.UserPreferenceChanged -= OnUserPreferenceChanged;
+            _packageMenu.Dispose();
+        };
 
-        _changeButton.Click += (_, _) => Browse();
+        _changeButton.Click += (_, _) => ChangePackage();
         foreach (var tile in _tiles)
         {
             tile.Click += (_, _) => SelectTarget(tile.Value);
@@ -450,17 +458,54 @@ internal sealed class MainForm : Form
 
     private void AutoDetect()
     {
-        var candidates = PackageLocator.FindCandidates();
-        if (candidates.Count > 0)
+        _candidates = PackageLocator.FindCandidates();
+        foreach (var c in _candidates)
         {
-            Log($"Found FSLTL via MSFS settings: {candidates[0]}");
-            OpenPackage(candidates[0]);
+            string link = PathResolver.SameFolder(c.Path, c.RealPath) ? string.Empty : $" (linked to {c.RealPath})";
+            Log($"Found FSLTL for {c.Simulator}: {c.Path}{link}");
+        }
+
+        if (_candidates.Count > 0)
+        {
+            OpenPackage(_candidates[0].Path);
         }
         else
         {
             Log("FSLTL was not found automatically.");
             UpdateUi();
         }
+    }
+
+    /// <summary>With detected packages (e.g. MSFS 2020 and 2024) a small menu, otherwise the folder dialog.</summary>
+    private void ChangePackage()
+    {
+        if (_candidates.Count == 0)
+        {
+            Browse();
+            return;
+        }
+
+        _packageMenu.Items.Clear();
+        _packageMenu.Renderer = new ToolStripProfessionalRenderer(new MenuColors(_t)) { RoundedEdges = false };
+        _packageMenu.BackColor = _t.Card;
+        _packageMenu.ForeColor = _t.Text;
+        foreach (var c in _candidates)
+        {
+            var item = new ToolStripMenuItem($"{c.Simulator}:  {c.RealPath}")
+            {
+                Checked = _pkg is not null && string.Equals(_pkg.Root, c.RealPath, StringComparison.OrdinalIgnoreCase),
+                ForeColor = _t.Text,
+            };
+            string path = c.Path;
+            item.Click += (_, _) => OpenPackage(path);
+            _packageMenu.Items.Add(item);
+        }
+
+        _packageMenu.Items.Add(new ToolStripSeparator());
+        var browse = new ToolStripMenuItem("Browse for another folder…") { ForeColor = _t.Text };
+        browse.Click += (_, _) => Browse();
+        _packageMenu.Items.Add(browse);
+        _packageMenu.Show(_changeButton, new Point(0, _changeButton.Height));
     }
 
     private void Browse()
@@ -490,11 +535,18 @@ internal sealed class MainForm : Form
         _status = null;
         _plan = null;
         _scanError = null;
+        _simulator = null;
 
         try
         {
             _pkg = PackageContext.Open(path);
+            _simulator = PackageLocator.SimulatorFor(_pkg.Root, _candidates);
             Log($"Package: {_pkg.Title} {_pkg.Version} in {_pkg.Root}");
+            if (_pkg.IsLinked)
+            {
+                Log($"Selected folder is a link: {_pkg.SelectedPath} → {_pkg.Root}. The tool works on the real folder.");
+            }
+
             _ = ScanAsync();
         }
         catch (Exception ex) when (ex is UserException or IOException or UnauthorizedAccessException or System.Text.Json.JsonException)
@@ -514,7 +566,6 @@ internal sealed class MainForm : Form
         }
 
         var pkg = _pkg;
-        string backupBase = BackupBase;
         var cts = new CancellationTokenSource();
         _scanCts = cts;
         _scanning = true;
@@ -526,7 +577,7 @@ internal sealed class MainForm : Form
             {
                 var layout = LayoutFile.Load(pkg.LayoutPath);
                 var s = Planner.Scan(pkg, layout, null, cts.Token);
-                return (s, PackageInspector.Inspect(pkg, s, backupBase));
+                return (s, PackageInspector.Inspect(pkg, s));
             }, cts.Token);
 
             if (_scanCts != cts)
@@ -656,7 +707,7 @@ internal sealed class MainForm : Form
         {
             _changeButton.Text = "Change";
             _pkgPath.Text = _scanError ?? _pkg.Root;
-            string name = $"{_pkg.Title} {_pkg.Version}";
+            string name = _simulator is null ? $"{_pkg.Title} {_pkg.Version}" : $"{_pkg.Title} {_pkg.Version} · {_simulator}";
             if (_scanning || _status is null)
             {
                 SetGlyph(_pkgGlyph, GlyphBusy, _t.TextMuted);
@@ -759,7 +810,7 @@ internal sealed class MainForm : Form
         _changeButton.Enabled = !_busy;
         _mipsBox.Enabled = !_busy;
         _backupLabel.Text = _pkg is null ? "Backup folder: –" : $"Backup folder: {BackupBase}";
-        _openBackupLink.Visible = _pkg is not null && Directory.Exists(BackupBase);
+        _openBackupLink.Visible = _pkg is not null && (_status?.Restorable is not null || Directory.Exists(BackupBase));
     }
 
     private static void SetGlyph(Label l, string glyph, Color color)
@@ -1002,4 +1053,21 @@ internal sealed class MainForm : Form
 
     private static string Gb1(long bytes) =>
         (bytes / 1_000_000_000d).ToString("0.0", CultureInfo.InvariantCulture) + " GB";
+
+    /// <summary>Menu colours that follow the light or dark theme.</summary>
+    private sealed class MenuColors(Theme t) : ProfessionalColorTable
+    {
+        public override Color ToolStripDropDownBackground => t.Card;
+        public override Color MenuBorder => t.Border;
+        public override Color MenuItemBorder => t.Border;
+        public override Color MenuItemSelected => t.ButtonHover;
+        public override Color ImageMarginGradientBegin => t.Card;
+        public override Color ImageMarginGradientMiddle => t.Card;
+        public override Color ImageMarginGradientEnd => t.Card;
+        public override Color SeparatorDark => t.Border;
+        public override Color SeparatorLight => t.Card;
+        public override Color CheckBackground => t.AccentSoft;
+        public override Color CheckSelectedBackground => t.AccentSoft;
+        public override Color CheckPressedBackground => t.AccentSoft;
+    }
 }

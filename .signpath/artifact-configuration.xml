@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  SignPath artifact configuration for FSLTL Downscaler.
+  Paste this into the artifact configuration of the SignPath project.
+  The GitHub workflow uploads FSLTL-Downscaler.exe as a ZIP artifact, so the root is <zip-file>.
+  product-name and product-version restrict signing to our own build (SignPath Foundation requirement).
+-->
+<artifact-configuration xmlns="http://signpath.io/artifact-configuration/v1">
+  <parameters>
+    <parameter name="version" required="true" />
+  </parameters>
+  <zip-file>
+    <pe-file path="FSLTL-Downscaler.exe" product-name="FSLTL Downscaler" product-version="${version}">
+      <authenticode-sign />
+    </pe-file>
+  </zip-file>
+</artifact-configuration>

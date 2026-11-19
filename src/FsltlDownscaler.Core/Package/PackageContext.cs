@@ -7,14 +7,22 @@ public sealed class PackageContext
 {
     public const string ExpectedTitle = "FSLTL Traffic Base";
 
-    private PackageContext(string root, string title, string version)
+    private PackageContext(string root, string selectedPath, string title, string version)
     {
         Root = root;
+        SelectedPath = selectedPath;
         Title = title;
         Version = version;
     }
 
+    /// <summary>The real package folder. Junctions and symbolic links are resolved.</summary>
     public string Root { get; }
+
+    /// <summary>The folder as the user or the auto detection gave it. Can be a link.</summary>
+    public string SelectedPath { get; }
+
+    /// <summary>True when the selected folder (or one of its parents) is a junction or symbolic link.</summary>
+    public bool IsLinked => !string.Equals(Root, SelectedPath, StringComparison.OrdinalIgnoreCase);
     public string Title { get; }
     public string Version { get; }
     public string ManifestPath => Path.Combine(Root, "manifest.json");
@@ -22,10 +30,16 @@ public sealed class PackageContext
 
     public static PackageContext Open(string path, bool allowOtherPackages = false)
     {
-        string root = Path.GetFullPath(path).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        string selected = Path.GetFullPath(path).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        if (!Directory.Exists(selected))
+        {
+            throw new UserException($"Folder not found: {selected}");
+        }
+
+        string root = PathResolver.ResolveFinal(selected);
         if (!Directory.Exists(root))
         {
-            throw new UserException($"Folder not found: {root}");
+            throw new UserException($"The link {selected} points to a folder that doesn't exist: {root}");
         }
 
         string manifest = Path.Combine(root, "manifest.json");
@@ -49,7 +63,7 @@ public sealed class PackageContext
             throw new UserException($"This is not an FSLTL Traffic Base package (title: '{title}').");
         }
 
-        return new PackageContext(root, title, version);
+        return new PackageContext(root, selected, title, version);
     }
 
     public string Relative(string fullPath) =>

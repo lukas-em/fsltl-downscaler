@@ -35,12 +35,13 @@ public static class Restorer
         }
 
         int restored = 0;
+        bool sameVolume = PathResolver.SameVolume(session.FilesDir, pkg.Root);
         foreach (var backup in session.BackedUpFiles().ToList())
         {
             string rel = Path.GetRelativePath(session.FilesDir, backup);
             string target = Path.Combine(pkg.Root, rel);
             Directory.CreateDirectory(Path.GetDirectoryName(target)!);
-            File.Move(backup, target, overwrite: true);
+            BackupSession.MoveOver(backup, target, sameVolume);
             restored++;
             if (restored % 250 == 0)
             {

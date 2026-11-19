@@ -21,7 +21,7 @@ internal static class Program
         <package>     The fsltl-traffic-base folder.
         --target      Maximum texture size (long side). Default 1024.
         --no-mips     Do not generate mip maps for textures that have none.
-        --backup-dir  Where backups go. Default: <folder above Community>\FSLTL-Downscaler-Backup
+        --backup-dir  Where backups go. Default: <folder above Community>\FSLTL-Downscaler-Backup (links are resolved)
         --yes         Do not ask for confirmation.
         --force       Restore even though layout.json changed after the run.
         """;
@@ -40,6 +40,10 @@ internal static class Program
             var pkg = PackageContext.Open(args[1]);
             Console.WriteLine($"Package: {pkg.Title} {pkg.Version}");
             Console.WriteLine($"Folder:  {pkg.Root}");
+            if (pkg.IsLinked)
+            {
+                Console.WriteLine($"Link:    {pkg.SelectedPath}");
+            }
             Console.WriteLine();
 
             return args[0].ToLowerInvariant() switch
@@ -81,8 +85,8 @@ internal static class Program
         SystemChecks.EnsureSimulatorNotRunning();
 
         string backupBase = o.BackupDir ?? BackupSession.DefaultBaseDir(pkg.Root);
-        var sessions = BackupSession.FindAll(backupBase, pkg.Root).ToList();
-        var unfinished = sessions.FirstOrDefault(s => s.Info.Status is "running");
+        var sessions = Sessions(pkg, o);
+        var unfinished = sessions.FirstOrDefault(s => s.Info.Status is "running" or "incomplete");
         if (unfinished is not null)
         {
             throw new UserException($"An unfinished run was found ({unfinished.Dir}). Run 'restore' first.");
@@ -141,9 +145,8 @@ internal static class Program
     private static int Restore(PackageContext pkg, Options o)
     {
         SystemChecks.EnsureSimulatorNotRunning();
-        string backupBase = o.BackupDir ?? BackupSession.DefaultBaseDir(pkg.Root);
-        var session = BackupSession.FindAll(backupBase, pkg.Root).FirstOrDefault(s => s.Info.Status != "restored")
-            ?? throw new UserException($"No backup to restore found in {backupBase}.");
+        var session = Sessions(pkg, o).FirstOrDefault(s => s.Info.Status != "restored")
+            ?? throw new UserException("No backup to restore found.");
 
         Console.WriteLine($"Restoring from {session.Dir} (status {session.Info.Status}, {session.Info.FilesReplaced} files)");
         if (!o.Yes)
@@ -229,11 +232,10 @@ internal static class Program
 
     private static void PrintSessions(PackageContext pkg, Options o)
     {
-        string backupBase = o.BackupDir ?? BackupSession.DefaultBaseDir(pkg.Root);
-        var sessions = BackupSession.FindAll(backupBase, pkg.Root).ToList();
+        var sessions = Sessions(pkg, o);
         if (sessions.Count == 0)
         {
-            Console.WriteLine($"No previous runs found in {backupBase}.");
+            Console.WriteLine("No previous runs found.");
             return;
         }
 
@@ -243,6 +245,12 @@ internal static class Program
             Console.WriteLine($"  {Path.GetFileName(s.Dir)}: target {s.Info.Target}, status {s.Info.Status}, {s.Info.FilesReplaced} files");
         }
     }
+
+    /// <summary>Backups of this package, newest first. With --backup-dir only that folder is searched.</summary>
+    private static List<BackupSession> Sessions(PackageContext pkg, Options o) =>
+        o.BackupDir is { } dir
+            ? BackupSession.FindAll(dir, pkg.Root).OrderByDescending(s => s.Info.StartedUtc).ToList()
+            : BackupSession.FindForPackage(pkg);
 
     private static string Gb(long bytes) => (bytes / 1_000_000_000d).ToString("0.00", CultureInfo.InvariantCulture) + " GB";
 

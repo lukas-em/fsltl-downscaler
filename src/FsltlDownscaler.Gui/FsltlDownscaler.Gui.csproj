@@ -7,7 +7,7 @@
     <AssemblyName>FSLTL-Downscaler</AssemblyName>
     <RootNamespace>FsltlDownscaler.Gui</RootNamespace>
     <AssemblyTitle>FSLTL Downscaler</AssemblyTitle>
-    <Description>Downscales FSLTL Traffic Base textures for MSFS 2024 and keeps layout.json in sync.</Description>
+    <Description>Downscales FSLTL Traffic Base textures for MSFS 2020 and MSFS 2024 and keeps layout.json in sync.</Description>
     <ApplicationIcon>app.ico</ApplicationIcon>
     <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
   </PropertyGroup>

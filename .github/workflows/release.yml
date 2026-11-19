@@ -1,0 +1,151 @@
+# Builds FSLTL-Downscaler.exe from this repository, signs it via SignPath (once configured)
+# and creates a draft GitHub release with the ZIP and the SHA256 checksums.
+#
+# Start: push a tag like v1.1.0 (must match <Version> in src/Directory.Build.props),
+#        or run it by hand under Actions > Release > Run workflow (test build, no release).
+#
+# Signing is skipped until the repository variable SIGNPATH_ORGANIZATION_ID is set.
+# Needed for signing (Settings > Secrets and variables > Actions):
+#   secret   SIGNPATH_API_TOKEN
+#   variable SIGNPATH_ORGANIZATION_ID
+#   variable SIGNPATH_PROJECT_SLUG          e.g. fsltl-downscaler
+#   variable SIGNPATH_SIGNING_POLICY_SLUG   e.g. release-signing
+
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write   # create the draft release
+  actions: read     # SignPath downloads the unsigned artifact
+
+jobs:
+  build:
+    runs-on: windows-latest
+    env:
+      SIGN: ${{ vars.SIGNPATH_ORGANIZATION_ID != '' }}
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Set up .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Read version
+        id: version
+        shell: pwsh
+        run: |
+          [xml]$props = Get-Content src/Directory.Build.props
+          $v = "$($props.Project.PropertyGroup.Version)".Trim()
+          if ($env:GITHUB_REF_TYPE -eq 'tag' -and $env:GITHUB_REF_NAME -ne "v$v") {
+            throw "Tag $env:GITHUB_REF_NAME does not match version $v in Directory.Build.props"
+          }
+          "version=$v" >> $env:GITHUB_OUTPUT
+
+      - name: Publish
+        shell: pwsh
+        run: |
+          dotnet publish src/FsltlDownscaler.Gui/FsltlDownscaler.Gui.csproj `
+            -c Release -r win-x64 --self-contained true `
+            -p:PublishSingleFile=true `
+            -p:IncludeNativeLibrariesForSelfExtract=true `
+            -p:DebugType=None -p:DebugSymbols=false `
+            -p:ContinuousIntegrationBuild=true `
+            -o out/unsigned
+          if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed" }
+
+      - name: Upload unsigned EXE
+        id: upload-unsigned
+        uses: actions/upload-artifact@v4
+        with:
+          name: FSLTL-Downscaler-unsigned
+          path: out/unsigned/FSLTL-Downscaler.exe
+          if-no-files-found: error
+
+      - name: Sign via SignPath
+        if: env.SIGN == 'true'
+        uses: signpath/github-action-submit-signing-request@v2
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
+          github-artifact-id: ${{ steps.upload-unsigned.outputs.artifact-id }}
+          wait-for-completion: true
+          # Every signing request is approved by hand in SignPath. Allow time for that.
+          wait-for-completion-timeout-in-seconds: 3600
+          output-artifact-directory: out/signed
+          parameters: |
+            version: "${{ steps.version.outputs.version }}"
+
+      - name: Package ZIP and checksums
+        id: package
+        shell: pwsh
+        run: |
+          $v = '${{ steps.version.outputs.version }}'
+          $name = "FSLTL-Downscaler-v$v"
+          $src = if ($env:SIGN -eq 'true') { 'out/signed' } else { 'out/unsigned' }
+          $exe = Join-Path $src 'FSLTL-Downscaler.exe'
+          if (-not (Test-Path $exe)) { throw "EXE not found in $src" }
+
+          $sig = Get-AuthenticodeSignature $exe
+          if ($env:SIGN -eq 'true') {
+            if ($sig.Status -ne 'Valid') { throw "Signature is not valid: $($sig.Status) $($sig.StatusMessage)" }
+            Write-Host "Signed by: $($sig.SignerCertificate.Subject)"
+          } else {
+            Write-Host "Unsigned build (SignPath not configured yet)."
+          }
+
+          $stage = "release/$name"
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          Copy-Item $exe $stage
+          Copy-Item release-files/README.txt $stage
+          Copy-Item LICENSE (Join-Path $stage 'LICENSE.txt')
+          $zip = "release/$name.zip"
+          Compress-Archive -Path "$stage/*" -DestinationPath $zip
+
+          $exeHash = (Get-FileHash (Join-Path $stage 'FSLTL-Downscaler.exe') -Algorithm SHA256).Hash
+          $zipHash = (Get-FileHash $zip -Algorithm SHA256).Hash
+          $hashFile = "release/SHA256-v$v.txt"
+          @(
+            "FSLTL-Downscaler.exe   SHA256 $exeHash"
+            "$name.zip   SHA256 $zipHash"
+          ) | Set-Content -Path $hashFile -Encoding ASCII
+          Get-Content $hashFile
+
+          "zip=$zip" >> $env:GITHUB_OUTPUT
+          "hashes=$hashFile" >> $env:GITHUB_OUTPUT
+          "exehash=$exeHash" >> $env:GITHUB_OUTPUT
+
+      - name: Upload release files
+        uses: actions/upload-artifact@v4
+        with:
+          name: FSLTL-Downscaler-v${{ steps.version.outputs.version }}
+          path: |
+            ${{ steps.package.outputs.zip }}
+            ${{ steps.package.outputs.hashes }}
+          if-no-files-found: error
+
+      - name: Create draft release
+        if: github.ref_type == 'tag'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $v = '${{ steps.version.outputs.version }}'
+          $signed = if ($env:SIGN -eq 'true') { 'Signed via SignPath Foundation. See [Code signing policy](https://github.com/${{ github.repository }}#code-signing-policy).' } else { 'Not code-signed.' }
+          $notes = @"
+          FSLTL Downscaler $v
+
+          $signed
+
+          SHA256 of FSLTL-Downscaler.exe: ``${{ steps.package.outputs.exehash }}``
+          "@
+          gh release create "v$v" '${{ steps.package.outputs.zip }}' '${{ steps.package.outputs.hashes }}' `
+            --draft --title "FSLTL Downscaler $v" --notes $notes

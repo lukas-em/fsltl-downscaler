@@ -12,7 +12,7 @@ public sealed class SessionInfo
     public bool GenerateMips { get; set; }
     public DateTime StartedUtc { get; set; }
     public DateTime? FinishedUtc { get; set; }
-    /// <summary>running, completed, cancelled, failed, restored</summary>
+    /// <summary>running, completed, cancelled, failed, incomplete, restored. "incomplete": textures replaced, but layout.json could not be updated.</summary>
     public string Status { get; set; } = "running";
     public string OriginalLayoutSha256 { get; set; } = string.Empty;
     public string? FinalLayoutSha256 { get; set; }
@@ -94,14 +94,64 @@ public sealed class BackupSession
             yield break;
         }
 
+        string realRoot = PathResolver.TryResolveFinal(packageRoot);
         foreach (var dir in Directory.EnumerateDirectories(baseDir).OrderByDescending(d => d, StringComparer.Ordinal))
         {
             var s = TryLoad(dir);
-            if (s is not null && string.Equals(Path.GetFullPath(s.Info.PackageRoot), packageRoot, StringComparison.OrdinalIgnoreCase))
+            if (s is not null && string.Equals(PathResolver.TryResolveFinal(s.Info.PackageRoot), realRoot, StringComparison.OrdinalIgnoreCase))
             {
                 yield return s;
             }
         }
+    }
+
+    /// <summary>
+    /// Every folder where a backup of this package can be. Besides the default next to the real package,
+    /// this covers backups made by version 1.0 through a linked folder: they are next to the link,
+    /// often on another drive.
+    /// </summary>
+    public static IReadOnlyList<string> CandidateBaseDirs(PackageContext pkg)
+    {
+        var dirs = new List<string> { DefaultBaseDir(pkg.Root) };
+        void Add(string packagePath)
+        {
+            string d = DefaultBaseDir(packagePath);
+            if (!dirs.Contains(d, StringComparer.OrdinalIgnoreCase))
+            {
+                dirs.Add(d);
+            }
+        }
+
+        Add(pkg.SelectedPath);
+        foreach (var c in PackageLocator.FindCandidates())
+        {
+            Add(c.Path);
+        }
+
+        return dirs;
+    }
+
+    /// <summary>All backups of this package in all candidate folders, newest first.</summary>
+    public static List<BackupSession> FindForPackage(PackageContext pkg)
+    {
+        var all = new List<BackupSession>();
+        foreach (string baseDir in CandidateBaseDirs(pkg))
+        {
+            try
+            {
+                all.AddRange(FindAll(baseDir, pkg.Root));
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                // A folder we can't read can't hold our backup.
+            }
+        }
+
+        return all
+            .GroupBy(s => s.Dir, StringComparer.OrdinalIgnoreCase)
+            .Select(g => g.First())
+            .OrderByDescending(s => s.Info.StartedUtc)
+            .ToList();
     }
 
     public static BackupSession? TryLoad(string dir)
@@ -112,8 +162,15 @@ public sealed class BackupSession
             return null;
         }
 
-        var info = JsonSerializer.Deserialize<SessionInfo>(File.ReadAllText(infoPath));
-        return info is null ? null : new BackupSession(dir, info);
+        try
+        {
+            var info = JsonSerializer.Deserialize<SessionInfo>(File.ReadAllText(infoPath));
+            return info is null ? null : new BackupSession(dir, info);
+        }
+        catch (Exception ex) when (ex is JsonException or IOException or UnauthorizedAccessException)
+        {
+            return null;
+        }
     }
 
     public void Save()
@@ -160,13 +217,57 @@ public sealed class BackupSession
         Journal($"replaced\t{rel}\t{newContent.LongLength}");
     }
 
-    /// <summary>Writes a package file (layout.json, manifest.json) via tmp + move.</summary>
+    /// <summary>
+    /// Writes a package file (layout.json, manifest.json). The new content goes to tmp first.
+    /// Same drive: tmp is renamed over the target. Other drive: tmp is copied over the target,
+    /// because replacing a file across drives with a move fails on some systems (access denied).
+    /// </summary>
     public void WriteMetaFile(string targetPath, byte[] content)
     {
         string tmp = Path.Combine(TmpDir, Path.GetFileName(targetPath) + ".new");
         File.WriteAllBytes(tmp, content);
-        File.Move(tmp, targetPath, overwrite: true);
+
+        if (PathResolver.SameVolume(tmp, targetPath))
+        {
+            File.Move(tmp, targetPath, overwrite: true);
+        }
+        else
+        {
+            File.Copy(tmp, targetPath, overwrite: true);
+            File.Delete(tmp);
+        }
+
+        if (new FileInfo(targetPath).Length != content.LongLength)
+        {
+            throw new IOException($"{Path.GetFileName(targetPath)} could not be written completely.");
+        }
+
         Journal($"wrote\t{Path.GetFileName(targetPath)}\t{content.LongLength}");
+    }
+
+    /// <summary>
+    /// Moves a file and replaces the target. Across drives the file is copied and the source deleted afterwards,
+    /// because a replacing move across drives fails on some systems (access denied).
+    /// </summary>
+    public static void MoveOver(string source, string target) =>
+        MoveOver(source, target, PathResolver.SameVolume(source, target));
+
+    public static void MoveOver(string source, string target, bool sameVolume)
+    {
+        if (sameVolume)
+        {
+            File.Move(source, target, overwrite: true);
+            return;
+        }
+
+        long length = new FileInfo(source).Length;
+        File.Copy(source, target, overwrite: true);
+        if (new FileInfo(target).Length != length)
+        {
+            throw new IOException($"{Path.GetFileName(target)} could not be copied completely.");
+        }
+
+        File.Delete(source);
     }
 
     public void Journal(string line)

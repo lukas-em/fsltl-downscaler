@@ -11,7 +11,7 @@ public enum PackageKind
     DownscaledByTool,
     /// <summary>Textures are already small, but not by this tool (or the backup is gone).</summary>
     ReducedOther,
-    /// <summary>A run of this tool was interrupted. Restore is recommended.</summary>
+    /// <summary>A run of this tool was interrupted or could not update layout.json. Restore is recommended.</summary>
     Interrupted,
 }
 
@@ -25,15 +25,15 @@ public sealed record PackageStatus(
 /// <summary>Works out what state a package is in, for a clear status line in the UI.</summary>
 public static class PackageInspector
 {
-    public static PackageStatus Inspect(PackageContext pkg, ScanResult scan, string backupBase)
+    public static PackageStatus Inspect(PackageContext pkg, ScanResult scan)
     {
         var (manifestText, _) = TextFiles.ReadUtf8(pkg.ManifestPath);
         long total = ManifestFile.ReadTotal(manifestText);
 
-        var sessions = BackupSession.FindAll(backupBase, pkg.Root).ToList();
+        var sessions = BackupSession.FindForPackage(pkg);
         var restorable = sessions.FirstOrDefault(s => s.Info.Status != "restored");
 
-        if (sessions.Any(s => s.Info.Status == "running"))
+        if (sessions.Any(s => s.Info.Status is "running" or "incomplete"))
         {
             return new PackageStatus(PackageKind.Interrupted, total, null, null, restorable);
         }

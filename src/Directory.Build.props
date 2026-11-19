@@ -1,6 +1,6 @@
 <Project>
   <PropertyGroup>
-    <Version>1.0.0</Version>
+    <Version>1.1.0</Version>
     <Product>FSLTL Downscaler</Product>
     <Authors>FranklinFjM</Authors>
     <Company>FranklinFjM</Company>
@@ -9,5 +9,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <InvariantGlobalization>true</InvariantGlobalization>
     <RootNamespace>FsltlDownscaler</RootNamespace>
+    <!-- Product version without the commit hash, e.g. 1.1.0. Required for the SignPath metadata check. -->
+    <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
   </PropertyGroup>
 </Project>

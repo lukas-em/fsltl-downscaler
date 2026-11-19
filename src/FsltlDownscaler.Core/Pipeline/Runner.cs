@@ -30,6 +30,7 @@ public static class Runner
         var done = new ConcurrentBag<Done>();
         var errors = new ConcurrentQueue<string>();
         string status = "completed";
+        Exception? metaError = null;
         int processed = 0;
         int total = plan.ToProcess.Count();
 
@@ -107,23 +108,35 @@ public static class Runner
         finally
         {
             // Always bring layout.json and manifest.json in line with what is on disk.
-            long delta = 0;
-            foreach (var d in done.Where(d => d.InLayout))
+            try
             {
-                layout.Update(d.RelPath, d.NewSize, d.FileTime);
-                delta += d.NewSize - d.OldLayoutSize;
-            }
+                long delta = 0;
+                foreach (var d in done.Where(d => d.InLayout))
+                {
+                    layout.Update(d.RelPath, d.NewSize, d.FileTime);
+                    delta += d.NewSize - d.OldLayoutSize;
+                }
 
-            byte[] newLayout = layout.Serialize();
-            long newTotal = oldTotal + delta;
-            if (totalIncludesMeta)
+                byte[] newLayout = layout.Serialize();
+                long newTotal = oldTotal + delta;
+                if (totalIncludesMeta)
+                {
+                    newTotal += newLayout.LongLength - oldLayoutBytes;
+                }
+
+                byte[] newManifest = TextFiles.EncodeUtf8(ManifestFile.WithTotal(manifestText, newTotal), manifestBom);
+                session.WriteMetaFile(pkg.LayoutPath, newLayout);
+                session.WriteMetaFile(pkg.ManifestPath, newManifest);
+            }
+            catch (Exception ex)
             {
-                newTotal += newLayout.LongLength - oldLayoutBytes;
+                // Textures are replaced, but layout.json doesn't match. Restore puts everything back.
+                metaError = ex;
+                status = "incomplete";
+                errors.Enqueue($"layout.json / manifest.json could not be updated: {ex.Message}");
+                session.Journal($"error\tlayout.json\t{ex.Message}");
+                log($"ERROR: layout.json / manifest.json could not be updated: {ex.Message}");
             }
-
-            byte[] newManifest = TextFiles.EncodeUtf8(ManifestFile.WithTotal(manifestText, newTotal), manifestBom);
-            session.WriteMetaFile(pkg.LayoutPath, newLayout);
-            session.WriteMetaFile(pkg.ManifestPath, newManifest);
 
             session.Info.Status = status;
             session.Info.FinishedUtc = DateTime.UtcNow;
@@ -133,6 +146,13 @@ public static class Runner
             session.Info.FinalLayoutSha256 = BackupSession.Sha256(pkg.LayoutPath);
             session.Save();
             session.CleanupTmp();
+        }
+
+        if (metaError is not null)
+        {
+            throw new UserException(
+                $"{done.Count:N0} textures were replaced, but layout.json could not be updated ({metaError.Message}). " +
+                "MSFS may not load FSLTL correctly like this. Please click \"Restore original\" to undo the run.");
         }
 
         return new RunResult(done.Count, errors.Count, session.Info.BytesBefore, session.Info.BytesAfter,
