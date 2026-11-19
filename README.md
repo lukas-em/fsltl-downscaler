@@ -29,7 +29,7 @@ Click "Restore original" to put the original textures back. After an FSLTL updat
 * Every original file is moved to `FSLTL-Downscaler-Backup` next to your Community folder before anything is replaced. If FSLTL is linked into the Community folder, the backup is created on the same drive as the real FSLTL folder. Disk space is only freed once you delete that folder.
 * No internet access, no admin rights, no telemetry.
 * Windows 10 or 11, 64 bit. No installation needed.
-* If Windows SmartScreen appears, click "More info" and then "Run anyway". Version 1.0.0 isn't code-signed, and a new signature needs some time to build up reputation with SmartScreen. You can check the file against the SHA256 checksum on the download page.
+* The program isn't code-signed yet. If Windows SmartScreen appears, click "More info" and then "Run anyway". You can check the file against the SHA256 checksum on the download page.
 
 ## Building from source
 
@@ -41,7 +41,7 @@ powershell -ExecutionPolicy Bypass -File .\build-release.ps1
 
 The script creates the EXE, the release ZIP and the SHA256 checksums in the `release` folder. Local builds aren't signed.
 
-Official releases are built by GitHub Actions (`.github/workflows/release.yml`) from this repository and signed via SignPath.
+Official releases are built by GitHub Actions (`.github/workflows/release.yml`) from this repository.
 
 | Project | Purpose |
 |---|---|
@@ -51,12 +51,14 @@ Official releases are built by GitHub Actions (`.github/workflows/release.yml`) 
 
 ## Code signing policy
 
-Free code signing provided by [SignPath.io](https://about.signpath.io/), certificate by [SignPath Foundation](https://signpath.org/).
+FSLTL Downscaler is applying to the SignPath Foundation open source program. Until the application is approved, all releases are unsigned.
+
+Once approved: Free code signing provided by [SignPath.io](https://about.signpath.io/), certificate by [SignPath Foundation](https://signpath.org/).
 
 * Authors and reviewers: [lukas-em](https://github.com/lukas-em)
 * Approvers: [lukas-em](https://github.com/lukas-em)
 
-Only binaries built by GitHub Actions from this repository are signed. Every signing request is approved by hand.
+Only binaries built by GitHub Actions from this repository will be signed. Every signing request will be approved by hand.
 
 **Privacy:** This program will not transfer any information to other networked systems unless specifically requested by the user or the person installing or operating it.
 
