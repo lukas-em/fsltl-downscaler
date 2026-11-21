@@ -19,6 +19,8 @@ internal sealed class MainForm : Form
     private const string GlyphInfo = "";
     private const string GlyphWarning = "";
     private const string GlyphBusy = "";
+    private const string GlyphAirplane = "\uE709";
+    private const string GlyphFolder = "\uE8B7";
 
     private static readonly (int Px, string Label)[] Sizes = [(2048, "High quality"), (1024, "Recommended"), (512, "Max performance")];
 
@@ -93,9 +95,9 @@ internal sealed class MainForm : Form
                "No FSLTL content is distributed with this tool. Use at your own risk. Written with the help of AI.",
     };
 
-    private readonly ContextMenuStrip _packageMenu = new() { ShowImageMargin = false, ShowCheckMargin = true };
-
     private IReadOnlyList<PackageCandidate> _candidates = [];
+    private PackagePicker? _picker;
+    private long _pickerClosedByButtonTick;
     private PackageContext? _pkg;
     private string? _simulator;
     private ScanResult? _scan;
@@ -300,11 +302,7 @@ internal sealed class MainForm : Form
         HandleCreated += (_, _) => ApplyNativeTheme();
         _log.HandleCreated += (_, _) => NativeMethods.SetControlTheme(_log, _t.Dark);
         SystemEvents.UserPreferenceChanged += OnUserPreferenceChanged;
-        FormClosed += (_, _) =>
-        {
-            SystemEvents.UserPreferenceChanged -= OnUserPreferenceChanged;
-            _packageMenu.Dispose();
-        };
+        FormClosed += (_, _) => SystemEvents.UserPreferenceChanged -= OnUserPreferenceChanged;
 
         _changeButton.Click += (_, _) => ChangePackage();
         foreach (var tile in _tiles)
@@ -476,36 +474,53 @@ internal sealed class MainForm : Form
         }
     }
 
-    /// <summary>With detected packages (e.g. MSFS 2020 and 2024) a small menu, otherwise the folder dialog.</summary>
+    /// <summary>With detected packages (e.g. MSFS 2020 and 2024) a small picker, otherwise the folder dialog.</summary>
     private void ChangePackage()
     {
+        // A click on Change while the picker is open closes it. The picker closes itself on mouse down,
+        // so the click that follows must not open it again.
+        if (_picker is not null)
+        {
+            _picker.Close();
+            return;
+        }
+
+        if (Environment.TickCount64 - _pickerClosedByButtonTick < 300)
+        {
+            return;
+        }
+
         if (_candidates.Count == 0)
         {
             Browse();
             return;
         }
 
-        _packageMenu.Items.Clear();
-        _packageMenu.Renderer = new ToolStripProfessionalRenderer(new MenuColors(_t)) { RoundedEdges = false };
-        _packageMenu.BackColor = _t.Card;
-        _packageMenu.ForeColor = _t.Text;
+        var entries = new List<PickerEntry>();
         foreach (var c in _candidates)
         {
-            var item = new ToolStripMenuItem($"{c.Simulator}:  {c.RealPath}")
-            {
-                Checked = _pkg is not null && string.Equals(_pkg.Root, c.RealPath, StringComparison.OrdinalIgnoreCase),
-                ForeColor = _t.Text,
-            };
+            bool current = _pkg is not null && string.Equals(_pkg.Root, c.RealPath, StringComparison.OrdinalIgnoreCase);
             string path = c.Path;
-            item.Click += (_, _) => OpenPackage(path);
-            _packageMenu.Items.Add(item);
+            entries.Add(new PickerEntry(c.Simulator, c.RealPath, GlyphAirplane, current, () => BeginInvoke(new Action(() => OpenPackage(path)))));
         }
 
-        _packageMenu.Items.Add(new ToolStripSeparator());
-        var browse = new ToolStripMenuItem("Browse for another folder…") { ForeColor = _t.Text };
-        browse.Click += (_, _) => Browse();
-        _packageMenu.Items.Add(browse);
-        _packageMenu.Show(_changeButton, new Point(0, _changeButton.Height));
+        entries.Add(new PickerEntry("Browse for another folder…", null, GlyphFolder, false, () => BeginInvoke(new Action(Browse)), SeparatorBefore: true));
+
+        int width = Math.Max(_changeButton.LogicalToDeviceUnits(420), _pkgCard.Width - _changeButton.LogicalToDeviceUnits(120));
+        var picker = new PackagePicker(_t, entries, Font, _changeButton.DeviceDpi, width);
+        picker.Closed += (_, e) =>
+        {
+            if (e.CloseReason == ToolStripDropDownCloseReason.AppClicked
+                && _changeButton.RectangleToScreen(_changeButton.ClientRectangle).Contains(Cursor.Position))
+            {
+                _pickerClosedByButtonTick = Environment.TickCount64;
+            }
+
+            _picker = null;
+            BeginInvoke(new Action(picker.Dispose));
+        };
+        _picker = picker;
+        picker.Show(_changeButton, new Point(_changeButton.Width - width, _changeButton.Height + _changeButton.LogicalToDeviceUnits(6)));
     }
 
     private void Browse()
@@ -1053,21 +1068,4 @@ internal sealed class MainForm : Form
 
     private static string Gb1(long bytes) =>
         (bytes / 1_000_000_000d).ToString("0.0", CultureInfo.InvariantCulture) + " GB";
-
-    /// <summary>Menu colours that follow the light or dark theme.</summary>
-    private sealed class MenuColors(Theme t) : ProfessionalColorTable
-    {
-        public override Color ToolStripDropDownBackground => t.Card;
-        public override Color MenuBorder => t.Border;
-        public override Color MenuItemBorder => t.Border;
-        public override Color MenuItemSelected => t.ButtonHover;
-        public override Color ImageMarginGradientBegin => t.Card;
-        public override Color ImageMarginGradientMiddle => t.Card;
-        public override Color ImageMarginGradientEnd => t.Card;
-        public override Color SeparatorDark => t.Border;
-        public override Color SeparatorLight => t.Card;
-        public override Color CheckBackground => t.AccentSoft;
-        public override Color CheckSelectedBackground => t.AccentSoft;
-        public override Color CheckPressedBackground => t.AccentSoft;
-    }
 }

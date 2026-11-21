@@ -114,6 +114,31 @@ internal static class NativeMethods
         }
     }
 
+    private const int DWMWA_WINDOW_CORNER_PREFERENCE = 33;
+    private const int DWMWA_BORDER_COLOR = 34;
+    private const int DWMWCP_ROUND = 2;
+
+    /// <summary>Rounded corners and a border in the theme colour for popups (Windows 11). False on older systems.</summary>
+    public static bool TryRoundCorners(IntPtr hwnd, Color border)
+    {
+        try
+        {
+            int preference = DWMWCP_ROUND;
+            if (DwmSetWindowAttribute(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, ref preference, sizeof(int)) != 0)
+            {
+                return false;
+            }
+
+            int colorRef = border.R | (border.G << 8) | (border.B << 16);
+            _ = DwmSetWindowAttribute(hwnd, DWMWA_BORDER_COLOR, ref colorRef, sizeof(int));
+            return true;
+        }
+        catch (Exception ex) when (ex is DllNotFoundException or EntryPointNotFoundException)
+        {
+            return false;
+        }
+    }
+
     /// <summary>Dark or light scroll bars for native controls such as the log box.</summary>
     public static void SetControlTheme(Control control, bool dark)
     {
