@@ -1,5 +1,7 @@
 using System.Diagnostics;
 using System.Globalization;
+using System.Runtime.InteropServices;
+using System.Text;
 using FsltlDownscaler.Package;
 using FsltlDownscaler.Pipeline;
 using FsltlDownscaler.Safety;
@@ -32,13 +34,14 @@ internal sealed class MainForm : Form
     private readonly PictureBox _logo = new() { SizeMode = PictureBoxSizeMode.Zoom, Size = new Size(44, 44), Margin = new Padding(0, 0, 12, 0) };
     private readonly Label _title = new() { AutoSize = true, Text = AppName, Margin = new Padding(0, 2, 0, 0) };
     private readonly Label _subtitle = new() { AutoSize = true, Text = "Smaller textures, more FPS, same traffic", Margin = new Padding(0) };
-    private readonly Label _version = new() { AutoSize = true, Anchor = AnchorStyles.Right | AnchorStyles.Top, Margin = new Padding(0, 4, 0, 0) };
-    private readonly LinkLabel _profileLink = new() { AutoSize = true, Text = "by FranklinFjM", Anchor = AnchorStyles.Right | AnchorStyles.Top, Margin = new Padding(0, 2, 0, 0) };
+    private readonly Label _version = new() { AutoSize = true, Margin = new Padding(0, 4, 0, 0) };
+    private readonly LinkLabel _profileLink = new() { AutoSize = true, Text = "by FranklinFjM", Margin = new Padding(2, 4, 0, 0) };
 
     // Banner
     private readonly CardPanel _banner = new() { Visible = false };
     private readonly Label _bannerGlyph = new() { AutoSize = true, Margin = new Padding(0, 1, 10, 0) };
-    private readonly Label _bannerText = new() { AutoSize = true, MaximumSize = new Size(560, 0), Margin = new Padding(0, 2, 0, 0) };
+    private readonly Label _bannerText = new() { AutoSize = true, MaximumSize = new Size(470, 0), Margin = new Padding(0, 2, 0, 0) };
+    private readonly LinkLabel _bannerAction = new() { AutoSize = true, Visible = false, Anchor = AnchorStyles.Right, Margin = new Padding(8, 2, 0, 0) };
     private readonly LinkLabel _bannerClose = new() { AutoSize = true, Text = "Dismiss", Anchor = AnchorStyles.Right, Margin = new Padding(8, 2, 0, 0) };
 
     // Package
@@ -60,17 +63,24 @@ internal sealed class MainForm : Form
     private readonly Label _sizeDetail = new() { AutoSize = true, Margin = new Padding(0, 8, 0, 0) };
 
     // Actions
-    private readonly RoundButton _primary = new() { AutoSize = true, MinimumSize = new Size(230, 42), Margin = new Padding(0, 0, 10, 0), Primary = true };
-    private readonly RoundButton _restore = new() { Text = "Restore original", AutoSize = true, MinimumSize = new Size(160, 42), Margin = new Padding(0) };
-    private readonly LinkLabel _advancedLink = new() { AutoSize = true, Text = "Advanced", Margin = new Padding(14, 13, 0, 0) };
-    private readonly LinkLabel _detailsLink = new() { AutoSize = true, Text = "Details", Margin = new Padding(14, 13, 0, 0) };
-    private readonly LinkLabel _aboutLink = new() { AutoSize = true, Text = "About", Margin = new Padding(14, 13, 0, 0) };
+    // Same grid as the size tiles: three equal columns, so the buttons line up with the tiles above.
+    private readonly RoundButton _primary = new() { AutoSize = false, Height = 42, MinimumSize = new Size(0, 42), Dock = DockStyle.Fill, Margin = new Padding(0, 0, 10, 0), Primary = true };
+    private readonly RoundButton _restore = new() { Text = "Restore original", AutoSize = false, Height = 42, MinimumSize = new Size(0, 42), Dock = DockStyle.Fill, Margin = new Padding(0, 0, 10, 0) };
+    private readonly RoundButton _deleteBackup = new() { Text = "Delete backup", AutoSize = false, Height = 42, MinimumSize = new Size(0, 42), Dock = DockStyle.Fill, Margin = new Padding(0) };
+
+    // Advanced and Details open right below the buttons. About sits in the header.
+    private readonly LinkLabel _advancedLink = new() { AutoSize = true, Margin = new Padding(2, 12, 0, 0) };
+    private readonly LinkLabel _detailsLink = new() { AutoSize = true, Margin = new Padding(20, 12, 0, 0) };
+    private readonly LinkLabel _aboutLink = new() { AutoSize = true, Text = "About", Margin = new Padding(0, 2, 0, 0) };
 
     // Advanced
     private readonly CardPanel _advCard = new() { Visible = false };
     private readonly CheckOption _mipsBox = new() { Checked = true, Text = "Create mip maps for textures that have none (recommended)", Margin = new Padding(0, 0, 0, 10) };
     private readonly Label _backupLabel = new() { AutoSize = true, MaximumSize = new Size(600, 0), Margin = new Padding(0, 2, 8, 0) };
     private readonly LinkLabel _openBackupLink = new() { AutoSize = true, Text = "Open", Margin = new Padding(0, 2, 0, 0) };
+    private readonly Label _backupSizeLabel = new() { AutoSize = true, Margin = new Padding(0, 8, 8, 0) };
+    private readonly Label _diagLabel = new() { AutoSize = true, Text = "Problems? Copy the details for a bug report:", Margin = new Padding(0, 8, 8, 0) };
+    private readonly LinkLabel _diagLink = new() { AutoSize = true, Text = "Copy diagnostics", Margin = new Padding(0, 8, 0, 0) };
 
     // Details
     private readonly CardPanel _logCard = new() { Visible = false };
@@ -91,9 +101,13 @@ internal sealed class MainForm : Form
         AutoSize = true,
         MaximumSize = new Size(720, 0),
         Margin = new Padding(2, 16, 0, 0),
-        Text = "Originals are moved to a backup folder and can be restored at any time. Only your local installation is changed. " +
+        Text = "Originals are moved to a backup folder and can be restored until you delete the backup. Only your local installation is changed. " +
                "No FSLTL content is distributed with this tool. Use at your own risk. Written with the help of AI.",
     };
+
+    // Easter egg: a small cat at the end of the footer.
+    private readonly CatMark _cat = new() { Size = new Size(14, 14), Anchor = AnchorStyles.Right | AnchorStyles.Bottom, Margin = new Padding(8, 0, 0, 1) };
+    private readonly ToolTip _catTip = new() { InitialDelay = 400 };
 
     private IReadOnlyList<PackageCandidate> _candidates = [];
     private PackagePicker? _picker;
@@ -110,6 +124,8 @@ internal sealed class MainForm : Form
     private bool _busy;
     private string? _scanError;
     private (int Done, int Total)? _runProgress;
+    private Action? _bannerActionHandler;
+    private string? _outdatedNoticeFor;
     private readonly Stopwatch _runWatch = new();
 
     public MainForm()
@@ -132,7 +148,7 @@ internal sealed class MainForm : Form
             _logo.Image = new Icon(icon, 48, 48).ToBitmap();
         }
 
-        _version.Text = $"v{AppVersion}";
+        _version.Text = $"v{AppVersion} ·";
         BuildLayout();
         WireEvents();
         ApplyTheme();
@@ -175,18 +191,25 @@ internal sealed class MainForm : Form
         header.SetRowSpan(_logo, 2);
         header.Controls.Add(_title, 1, 0);
         header.Controls.Add(_subtitle, 1, 1);
-        header.Controls.Add(_version, 2, 0);
-        header.Controls.Add(_profileLink, 2, 1);
+        var headerTop = new FlowLayoutPanel { AutoSize = true, WrapContents = false, Margin = new Padding(0), Anchor = AnchorStyles.Right | AnchorStyles.Top };
+        headerTop.Controls.Add(_version);
+        headerTop.Controls.Add(_profileLink);
+        var headerLinks = new FlowLayoutPanel { AutoSize = true, WrapContents = false, Margin = new Padding(0), Anchor = AnchorStyles.Right | AnchorStyles.Top };
+        headerLinks.Controls.Add(_aboutLink);
+        header.Controls.Add(headerTop, 2, 0);
+        header.Controls.Add(headerLinks, 2, 1);
         root.Controls.Add(header);
 
         // Banner
-        _banner.ColumnCount = 3;
+        _banner.ColumnCount = 4;
         _banner.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         _banner.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         _banner.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        _banner.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         _banner.Controls.Add(_bannerGlyph, 0, 0);
         _banner.Controls.Add(_bannerText, 1, 0);
-        _banner.Controls.Add(_bannerClose, 2, 0);
+        _banner.Controls.Add(_bannerAction, 2, 0);
+        _banner.Controls.Add(_bannerClose, 3, 0);
         _banner.Margin = new Padding(0, 0, 0, 12);
         root.Controls.Add(_banner);
 
@@ -232,20 +255,23 @@ internal sealed class MainForm : Form
         _sizeCard.Margin = new Padding(0, 0, 0, 14);
         root.Controls.Add(_sizeCard);
 
-        // Actions
-        var actions = new TableLayoutPanel { AutoSize = true, Dock = DockStyle.Fill, ColumnCount = 2, Margin = new Padding(0) };
-        actions.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        actions.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        var left = new FlowLayoutPanel { AutoSize = true, WrapContents = false, Margin = new Padding(0) };
-        left.Controls.Add(_primary);
-        left.Controls.Add(_restore);
-        var right = new FlowLayoutPanel { AutoSize = true, WrapContents = false, Margin = new Padding(0), Anchor = AnchorStyles.Right };
-        right.Controls.Add(_advancedLink);
-        right.Controls.Add(_detailsLink);
-        right.Controls.Add(_aboutLink);
-        actions.Controls.Add(left, 0, 0);
-        actions.Controls.Add(right, 1, 0);
+        // Actions: three equal columns like the size tiles. A hidden button keeps its column free,
+        // so the others don't jump around.
+        var actions = new TableLayoutPanel { AutoSize = true, Dock = DockStyle.Fill, ColumnCount = 3, Margin = new Padding(0) };
+        RoundButton[] buttons = [_primary, _restore, _deleteBackup];
+        for (int i = 0; i < buttons.Length; i++)
+        {
+            actions.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 33.33f));
+            actions.Controls.Add(buttons[i], i, 0);
+        }
+
         root.Controls.Add(actions);
+
+        // Expanders for Advanced and Details, directly under the action they belong to.
+        var expanders = new FlowLayoutPanel { AutoSize = true, WrapContents = false, Margin = new Padding(0) };
+        expanders.Controls.Add(_advancedLink);
+        expanders.Controls.Add(_detailsLink);
+        root.Controls.Add(expanders);
 
         // Advanced
         _advCard.ColumnCount = 1;
@@ -254,6 +280,13 @@ internal sealed class MainForm : Form
         backupRow.Controls.Add(_backupLabel);
         backupRow.Controls.Add(_openBackupLink);
         _advCard.Controls.Add(backupRow, 0, 1);
+        var backupSizeRow = new FlowLayoutPanel { AutoSize = true, WrapContents = false, Margin = new Padding(0), BackColor = Color.Transparent, Dock = DockStyle.Fill };
+        backupSizeRow.Controls.Add(_backupSizeLabel);
+        _advCard.Controls.Add(backupSizeRow, 0, 2);
+        var diagRow = new FlowLayoutPanel { AutoSize = true, WrapContents = false, Margin = new Padding(0), BackColor = Color.Transparent, Dock = DockStyle.Fill };
+        diagRow.Controls.Add(_diagLabel);
+        diagRow.Controls.Add(_diagLink);
+        _advCard.Controls.Add(diagRow, 0, 3);
         _advCard.Margin = new Padding(0, 14, 0, 0);
         root.Controls.Add(_advCard);
 
@@ -263,7 +296,15 @@ internal sealed class MainForm : Form
         _logCard.Margin = new Padding(0, 14, 0, 0);
         root.Controls.Add(_logCard);
 
-        root.Controls.Add(_footer);
+        // Footer text with the cat in the bottom right corner.
+        var footerRow = new TableLayoutPanel { AutoSize = true, Dock = DockStyle.Fill, ColumnCount = 2, Margin = new Padding(0) };
+        footerRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        footerRow.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        _footer.MaximumSize = new Size(690, 0);
+        footerRow.Controls.Add(_footer, 0, 0);
+        footerRow.Controls.Add(_cat, 1, 0);
+        root.Controls.Add(footerRow);
+        _catTip.SetToolTip(_cat, "Meow. Smaller textures, happier cats.");
         Controls.Add(root);
 
         _title.Font = new Font("Segoe UI Semibold", 15f);
@@ -275,7 +316,7 @@ internal sealed class MainForm : Form
             l.Font = new Font(GlyphFont, 15f);
         }
 
-        foreach (var small in new Control[] { _subtitle, _version, _profileLink, _pkgPath, _sizeDetail, _footer, _backupLabel })
+        foreach (var small in new Control[] { _subtitle, _version, _profileLink, _aboutLink, _pkgPath, _sizeDetail, _footer, _backupLabel, _backupSizeLabel, _diagLabel })
         {
             small.Font = new Font("Segoe UI", 9f);
         }
@@ -315,7 +356,13 @@ internal sealed class MainForm : Form
         _restore.Click += async (_, _) => await RestoreAsync();
         _advancedLink.LinkClicked += (_, _) => _advCard.Visible = !_advCard.Visible;
         _detailsLink.LinkClicked += (_, _) => _logCard.Visible = !_logCard.Visible;
+        _advCard.VisibleChanged += (_, _) => UpdateExpanders();
+        _logCard.VisibleChanged += (_, _) => UpdateExpanders();
+        UpdateExpanders();
         _openBackupLink.LinkClicked += (_, _) => OpenBackupFolder();
+        _deleteBackup.Click += async (_, _) => await DeleteBackupsAsync(outdatedOnly: false);
+        _diagLink.LinkClicked += (_, _) => CopyDiagnostics();
+        _bannerAction.LinkClicked += (_, _) => _bannerActionHandler?.Invoke();
         _bannerClose.LinkClicked += (_, _) => _banner.Visible = false;
 
         FormClosing += (_, e) =>
@@ -409,15 +456,21 @@ internal sealed class MainForm : Form
         _sizeRight.ForeColor = _t.Text;
         _sizeDetail.ForeColor = _t.TextMuted;
         _footer.ForeColor = _t.TextMuted;
+        _cat.CanvasColor = _t.Window;
+        _cat.CatColor = _t.TextMuted;
+        _cat.HoverColor = _t.Accent;
+        _cat.Invalidate();
         _backupLabel.ForeColor = _t.TextSecondary;
+        _backupSizeLabel.ForeColor = _t.TextSecondary;
+        _diagLabel.ForeColor = _t.TextSecondary;
         _bannerText.ForeColor = _t.Text;
 
-        foreach (var l in new Control[] { _pkgGlyph, _pkgTitle, _pkgPath, _sizeLeft, _sizeRight, _sizeDetail, _backupLabel, _bannerGlyph, _bannerText })
+        foreach (var l in new Control[] { _pkgGlyph, _pkgTitle, _pkgPath, _sizeLeft, _sizeRight, _sizeDetail, _backupLabel, _backupSizeLabel, _diagLabel, _bannerGlyph, _bannerText })
         {
             l.BackColor = Color.Transparent;
         }
 
-        foreach (var link in new[] { _advancedLink, _detailsLink, _aboutLink, _profileLink, _openBackupLink, _bannerClose })
+        foreach (var link in new[] { _advancedLink, _detailsLink, _aboutLink, _profileLink, _openBackupLink, _diagLink, _bannerAction, _bannerClose })
         {
             link.LinkColor = _t.Accent;
             link.ActiveLinkColor = _t.AccentHover;
@@ -444,7 +497,7 @@ internal sealed class MainForm : Form
         _log.BackColor = _t.Card;
         _log.ForeColor = _t.TextSecondary;
 
-        foreach (var b in new[] { _changeButton, _primary, _restore })
+        foreach (var b in new[] { _changeButton, _primary, _restore, _deleteBackup })
         {
             b.Theme = _t;
             b.CanvasColor = b == _changeButton ? _t.Card : _t.Window;
@@ -603,7 +656,19 @@ internal sealed class MainForm : Form
             _scan = scan;
             _status = status;
             Log($"Checked {scan.Items.Count:N0} textures. State: {Describe(status)}.");
+            if (status.MovedFrom is { } movedFrom)
+            {
+                Log($"The backup was made when the package was in {movedFrom}. It still belongs to this package.");
+            }
+
+            if (status.Backups.Count > 0)
+            {
+                Log($"Backups of this package: {status.Backups.Count}, {status.BackupFiles:N0} original textures, {SizeText(status.BackupBytes)}.");
+            }
+
             RecomputePlans();
+            NotifyOutdatedBackups(pkg, status);
+            _ = RemoveLeftoversAsync(status);
         }
         catch (OperationCanceledException)
         {
@@ -826,6 +891,27 @@ internal sealed class MainForm : Form
         _mipsBox.Enabled = !_busy;
         _backupLabel.Text = _pkg is null ? "Backup folder: –" : $"Backup folder: {BackupBase}";
         _openBackupLink.Visible = _pkg is not null && (_status?.Restorable is not null || Directory.Exists(BackupBase));
+        int backups = _status?.Backups.Count ?? 0;
+        _backupSizeLabel.Text = _status is null || _scanning
+            ? "Backup: –"
+            : backups == 0
+                ? "Backup: none. It is created when you downscale."
+                : backups == 1
+                    ? $"Backup: {_status.BackupFiles:N0} original textures · {SizeText(_status.BackupBytes)}"
+                    : $"Backups: {backups} runs, {_status.BackupFiles:N0} original textures · {SizeText(_status.BackupBytes)}";
+        // Key feature for disk space, so it sits next to Restore. Not offered after an interrupted run:
+        // that backup is needed to repair the package.
+        _deleteBackup.Text = backups > 1 ? "Delete backups" : "Delete backup";
+        _deleteBackup.Visible = backups > 0 && !_busy && !_scanning && _status?.Kind != PackageKind.Interrupted;
+        _diagLink.Enabled = !_busy;
+        _bannerAction.Enabled = !_busy && !_scanning;
+    }
+
+    /// <summary>The arrow shows whether the section is open.</summary>
+    private void UpdateExpanders()
+    {
+        _advancedLink.Text = _advCard.Visible ? "Advanced options ▴" : "Advanced options ▾";
+        _detailsLink.Text = _logCard.Visible ? "Details ▴" : "Details ▾";
     }
 
     private static void SetGlyph(Label l, string glyph, Color color)
@@ -1032,6 +1118,235 @@ internal sealed class MainForm : Form
         }
     }
 
+    /// <summary>
+    /// After an FSLTL update the old backup no longer fits the package. Tell the user once per package,
+    /// so the space (often 50 GB) isn't lost without them knowing.
+    /// </summary>
+    private void NotifyOutdatedBackups(PackageContext pkg, PackageStatus status)
+    {
+        if (status.Outdated.Count == 0 || _busy || string.Equals(_outdatedNoticeFor, pkg.Root, StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        _outdatedNoticeFor = pkg.Root;
+        string? oldVersion = status.OutdatedVersion;
+        bool versionChanged = oldVersion is not null && !string.Equals(oldVersion, pkg.Version, StringComparison.Ordinal);
+        string size = SizeText(status.OutdatedBytes);
+        string text;
+        if (status.Kind == PackageKind.DownscaledByTool)
+        {
+            // Already downscaled again after the update. Only the old backup is left over.
+            text = versionChanged
+                ? $"There is still a backup of FSLTL {oldVersion} ({size}). It can't be used with {pkg.Version}. Delete it to free the space."
+                : $"There is still a backup from before FSLTL was reinstalled ({size}). It can't be used any more. Delete it to free the space.";
+        }
+        else
+        {
+            text = (versionChanged
+                       ? $"FSLTL was updated from {oldVersion} to {pkg.Version} after the last run."
+                       : "FSLTL was reinstalled or updated after the last run.") +
+                   $" The old backup ({size}) can't be used with this version. Delete it to free the space, then downscale again.";
+        }
+
+        Log($"{status.Outdated.Count} old backup(s) from before an FSLTL update, {size}, no longer match the package.");
+        ShowBanner(GlyphInfo, _t.Warning, _t.WarningSoft, text,
+            "Delete old backup", () => _ = DeleteBackupsAsync(outdatedOnly: true));
+    }
+
+    private async Task DeleteBackupsAsync(bool outdatedOnly)
+    {
+        var status = _status;
+        if (_pkg is null || status is null || _busy || _scanning)
+        {
+            return;
+        }
+
+        var sessions = (outdatedOnly ? status.Outdated : status.Backups).ToList();
+        if (sessions.Count == 0)
+        {
+            return;
+        }
+
+        // Folders of restored runs hold no textures. They go along without being mentioned.
+        var leftovers = outdatedOnly ? new List<BackupSession>() : status.Leftovers.ToList();
+
+        if (sessions.Any(s => s.Info.Status is "running" or "incomplete"))
+        {
+            MessageBox.Show(this, "The last run was interrupted. Please restore the original first. The backup is needed for that.",
+                AppName, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+
+        long bytes = outdatedOnly ? status.OutdatedBytes : status.BackupBytes;
+        bool losesRestore = !outdatedOnly && status.Restorable is not null && status.Kind == PackageKind.DownscaledByTool;
+        string nl = Environment.NewLine;
+        string question = outdatedOnly
+            ? $"Delete the old backup from before the FSLTL update?{nl}{nl}" +
+              $"{SizeText(bytes)} of disk space are freed. The files in it belong to the previous FSLTL installation " +
+              "and can't be restored into the current one."
+            : losesRestore
+                ? $"Delete the backup?{nl}{nl}{SizeText(bytes)} of disk space are freed.{nl}{nl}" +
+                  "After that, \"Restore original\" is no longer possible. To get the full-size textures back, " +
+                  "you would have to reinstall FSLTL. Only do this once you're sure everything works in MSFS."
+                : $"Delete {(sessions.Count == 1 ? "the backup" : $"all {sessions.Count} backups")} of this package?{nl}{nl}" +
+                  $"{SizeText(bytes)} of disk space are freed. The current package doesn't need {(sessions.Count == 1 ? "it" : "them")}.";
+        if (MessageBox.Show(this, question, AppName, MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2) != DialogResult.Yes)
+        {
+            return;
+        }
+
+        _banner.Visible = false;
+        _busy = true;
+        UpdateUi();
+        try
+        {
+            var (deleted, errors) = await Task.Run(() =>
+            {
+                var ok = new List<string>();
+                var failed = new List<string>();
+                foreach (var s in sessions.Concat(leftovers))
+                {
+                    try
+                    {
+                        s.Delete();
+                        ok.Add(s.Dir);
+                    }
+                    catch (Exception ex) when (ex is UserException or IOException or UnauthorizedAccessException)
+                    {
+                        failed.Add($"{s.Dir}: {ex.Message}");
+                    }
+                }
+
+                BackupLocations.Prune();
+                return (ok, failed);
+            });
+
+            foreach (var d in deleted)
+            {
+                Log($"Deleted backup {d}");
+            }
+
+            if (errors.Count == 0)
+            {
+                ShowBanner(GlyphOk, _t.Success, _t.SuccessSoft, $"Backup deleted. {SizeText(bytes)} of disk space were freed.");
+            }
+            else
+            {
+                foreach (var e in errors)
+                {
+                    Log($"  Could not delete: {e}");
+                }
+
+                ShowBanner(GlyphWarning, _t.Warning, _t.WarningSoft,
+                    $"{errors.Count} of {sessions.Count} backups could not be deleted completely. Open Details for more.");
+                _logCard.Visible = true;
+            }
+        }
+        catch (Exception ex)
+        {
+            ShowError("Deleting the backup failed.", ex);
+        }
+        finally
+        {
+            _busy = false;
+            _ = ScanAsync();
+        }
+    }
+
+    /// <summary>
+    /// Puts everything needed to understand a problem report on the clipboard: versions, paths, links,
+    /// volumes, backups and the log. Nothing is sent anywhere and nothing is written to the package.
+    /// </summary>
+    private void CopyDiagnostics()
+    {
+        var sb = new StringBuilder();
+        void Line(string text) => sb.AppendLine(text);
+        string Safe(Func<string> f)
+        {
+            try
+            {
+                return f();
+            }
+            catch (Exception ex)
+            {
+                return $"? ({ex.GetType().Name}: {ex.Message})";
+            }
+        }
+
+        Line($"FSLTL Downscaler {AppVersion} diagnostics, {DateTime.Now:yyyy-MM-dd HH:mm}");
+        Line($"Windows: {RuntimeInformation.OSDescription} ({RuntimeInformation.OSArchitecture}), .NET {Environment.Version}, " +
+             $"{(_t.Dark ? "dark" : "light")} mode, {DeviceDpi} dpi");
+        Line(string.Empty);
+
+        Line("Detected packages:");
+        if (_candidates.Count == 0)
+        {
+            Line("  none");
+        }
+
+        foreach (var c in _candidates)
+        {
+            Line($"  {c.Simulator}: {c.Path}{(PathResolver.SameFolder(c.Path, c.RealPath) ? string.Empty : $" -> {c.RealPath}")}");
+        }
+
+        Line(string.Empty);
+        if (_pkg is null)
+        {
+            Line($"Selected package: none{(_scanError is null ? string.Empty : $" ({_scanError})")}");
+        }
+        else
+        {
+            var pkg = _pkg;
+            Line($"Selected package: {pkg.Title} {pkg.Version}{(_simulator is null ? string.Empty : $" ({_simulator})")}");
+            Line($"  Selected path: {pkg.SelectedPath}");
+            Line($"  Real folder:   {pkg.Root}{(pkg.IsLinked ? " (linked)" : string.Empty)}");
+            Line($"  Volume:        {Safe(() => PathResolver.VolumeRootOf(pkg.Root))}, free {Safe(() => Gb1(PathResolver.FreeBytes(pkg.Root)))}");
+            Line($"  Backup folder: {BackupBase}");
+            Line($"  Backup volume: {Safe(() => PathResolver.VolumeRootOf(BackupBase))}, " +
+                 $"same as package: {Safe(() => PathResolver.SameVolume(pkg.Root, PathResolver.NearestExisting(BackupBase)) ? "yes" : "no")}");
+            if (_status is { } st)
+            {
+                Line($"  State: {Describe(st)}, package size {Gb1(st.PackageSize)}" +
+                     (_scan is null ? string.Empty : $", {_scan.Items.Count:N0} textures, {_scan.LargerThan(_target):N0} larger than {_target} px"));
+                if (st.MovedFrom is not null)
+                {
+                    Line($"  Backup made in: {st.MovedFrom}");
+                }
+
+                Line($"  Backups: {st.Backups.Count}, {st.BackupFiles:N0} files, {SizeText(st.BackupBytes)}" +
+                     $"{(st.Outdated.Count > 0 ? $", {st.Outdated.Count} from before an FSLTL update" : string.Empty)}" +
+                     $"{(st.Leftovers.Count > 0 ? $", {st.Leftovers.Count} restored runs left over" : string.Empty)}");
+                foreach (var s in st.Backups.Concat(st.Leftovers))
+                {
+                    Line($"    {s.Dir}: {s.Info.Status}, FSLTL {s.Info.PackageVersion}, {s.Info.Target} px, " +
+                         $"{s.Info.FilesReplaced:N0} files, {s.Info.StartedUtc.ToLocalTime():yyyy-MM-dd HH:mm}, tool {s.Info.ToolVersion}");
+                }
+            }
+            else
+            {
+                Line($"  State: {(_scanning ? "checking" : _scanError ?? "unknown")}");
+            }
+        }
+
+        Line(string.Empty);
+        Line("Log:");
+        Line(_log.Text.TrimEnd());
+
+        try
+        {
+            Clipboard.SetText(sb.ToString());
+            Log("Diagnostics copied to the clipboard.");
+            ShowBanner(GlyphOk, _t.Success, _t.SuccessSoft,
+                "Diagnostics copied to the clipboard. Paste them into your comment or message. " +
+                "They contain folder paths, which may include your Windows user name.");
+        }
+        catch (Exception ex) when (ex is ExternalException or ThreadStateException)
+        {
+            ShowError("The diagnostics could not be copied to the clipboard.", ex);
+        }
+    }
+
     private void OpenBackupFolder()
     {
         string dir = _status?.Restorable?.Dir ?? BackupBase;
@@ -1043,10 +1358,13 @@ internal sealed class MainForm : Form
 
     // ================================================================ helpers
 
-    private void ShowBanner(string glyph, Color glyphColor, Color fill, string text)
+    private void ShowBanner(string glyph, Color glyphColor, Color fill, string text, string? actionText = null, Action? action = null)
     {
         SetGlyph(_bannerGlyph, glyph, glyphColor);
         _bannerText.Text = text;
+        _bannerActionHandler = action;
+        _bannerAction.Text = actionText ?? string.Empty;
+        _bannerAction.Visible = actionText is not null && action is not null;
         _banner.FillColor = fill;
         _banner.BorderColor = fill;
         _banner.CanvasColor = _t.Window;
@@ -1065,6 +1383,52 @@ internal sealed class MainForm : Form
         MessageBox.Show(this, $"{message}{Environment.NewLine}{Environment.NewLine}{detail}", AppName,
             MessageBoxButtons.OK, MessageBoxIcon.Error);
     }
+
+    /// <summary>
+    /// Folders of runs that were already restored only hold a copy of the old layout.json and the journal.
+    /// They are of no use any more, so they are removed quietly. Only when no original texture is left in them.
+    /// </summary>
+    private async Task RemoveLeftoversAsync(PackageStatus status)
+    {
+        if (status.Leftovers.Count == 0 || _busy)
+        {
+            return;
+        }
+
+        int removed = await Task.Run(() =>
+        {
+            int n = 0;
+            foreach (var s in status.Leftovers)
+            {
+                try
+                {
+                    if (!s.BackedUpFiles().Any())
+                    {
+                        s.Delete();
+                        n++;
+                    }
+                }
+                catch (Exception ex) when (ex is UserException or IOException or UnauthorizedAccessException)
+                {
+                    // Not important. Tried again next time.
+                }
+            }
+
+            BackupLocations.Prune();
+            return n;
+        });
+
+        if (removed > 0)
+        {
+            Log($"Removed {removed} empty folder(s) of runs that were already restored.");
+        }
+    }
+
+    /// <summary>Sizes below 1 GB in MB, so a small backup doesn't show up as "0.0 GB".</summary>
+    private static string SizeText(long bytes) =>
+        bytes >= 1_000_000_000 ? Gb1(bytes)
+        : bytes >= 1_000_000 ? (bytes / 1_000_000d).ToString("0", CultureInfo.InvariantCulture) + " MB"
+        : "less than 1 MB";
 
     private static string Gb1(long bytes) =>
         (bytes / 1_000_000_000d).ToString("0.0", CultureInfo.InvariantCulture) + " GB";

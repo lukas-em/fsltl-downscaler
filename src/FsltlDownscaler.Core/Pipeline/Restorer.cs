@@ -34,9 +34,29 @@ public static class Restorer
             throw new UserException("Backup is incomplete: original layout.json or manifest.json missing.");
         }
 
-        int restored = 0;
+        if (session.IsFromOtherFolder(pkg))
+        {
+            log($"The backup was made in {session.Info.PackageRoot}. The package has moved, restoring to {pkg.Root}.");
+        }
+
+        var files = session.BackedUpFiles().ToList();
         bool sameVolume = PathResolver.SameVolume(session.FilesDir, pkg.Root);
-        foreach (var backup in session.BackedUpFiles().ToList())
+        if (!sameVolume)
+        {
+            // Across volumes the originals are copied back. Check the space up front instead of failing halfway.
+            long needed = files.Sum(f => new FileInfo(f).Length);
+            needed += needed / 10;
+            long free = PathResolver.FreeBytes(pkg.Root);
+            if (free < needed)
+            {
+                throw new UserException(
+                    $"There isn't enough free disk space to restore. Needed: {needed / 1_000_000_000d:0.0} GB, " +
+                    $"available: {free / 1_000_000_000d:0.0} GB on the drive of {pkg.Root}.");
+            }
+        }
+
+        int restored = 0;
+        foreach (var backup in files)
         {
             string rel = Path.GetRelativePath(session.FilesDir, backup);
             string target = Path.Combine(pkg.Root, rel);

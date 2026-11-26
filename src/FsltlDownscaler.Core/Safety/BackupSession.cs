@@ -84,10 +84,15 @@ public sealed class BackupSession
         File.Copy(pkg.LayoutPath, Path.Combine(session.MetaDir, "layout.json"));
         File.Copy(pkg.ManifestPath, Path.Combine(session.MetaDir, "manifest.json"));
         session.Save();
+        BackupLocations.Remember(full);
         return session;
     }
 
-    public static IEnumerable<BackupSession> FindAll(string baseDir, string packageRoot)
+    /// <summary>
+    /// Backups in <paramref name="baseDir"/> that belong to the package in <paramref name="packageRoot"/>.
+    /// With <paramref name="currentLayoutHash"/> a backup also matches after the package was moved to another folder.
+    /// </summary>
+    public static IEnumerable<BackupSession> FindAll(string baseDir, string packageRoot, string? currentLayoutHash = null)
     {
         if (!Directory.Exists(baseDir))
         {
@@ -98,12 +103,38 @@ public sealed class BackupSession
         foreach (var dir in Directory.EnumerateDirectories(baseDir).OrderByDescending(d => d, StringComparer.Ordinal))
         {
             var s = TryLoad(dir);
-            if (s is not null && string.Equals(PathResolver.TryResolveFinal(s.Info.PackageRoot), realRoot, StringComparison.OrdinalIgnoreCase))
+            if (s is not null && BelongsTo(s, realRoot, currentLayoutHash))
             {
                 yield return s;
             }
         }
     }
+
+    /// <summary>
+    /// Same package folder, or a package that was moved: the layout.json written by a run is unique,
+    /// because it holds the file times of the replaced textures. A copy doesn't count. If the package
+    /// is still in its old place with the same layout.json, the backup stays with the old place.
+    /// </summary>
+    private static bool BelongsTo(BackupSession s, string realRoot, string? currentLayoutHash)
+    {
+        if (string.Equals(PathResolver.TryResolveFinal(s.Info.PackageRoot), realRoot, StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        if (currentLayoutHash is null || s.Info.Status == "restored"
+            || !string.Equals(s.Info.FinalLayoutSha256, currentLayoutHash, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        string oldLayout = Path.Combine(s.Info.PackageRoot, "layout.json");
+        return !File.Exists(oldLayout) || !string.Equals(TrySha256(oldLayout), currentLayoutHash, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>True when the backup was made while the package was in another folder.</summary>
+    public bool IsFromOtherFolder(PackageContext pkg) =>
+        !PathResolver.SameFolder(Info.PackageRoot, pkg.Root);
 
     /// <summary>
     /// Every folder where a backup of this package can be. Besides the default next to the real package,
@@ -128,18 +159,31 @@ public sealed class BackupSession
             Add(c.Path);
         }
 
+        // Every backup folder the tool has used before. Finds the backup after the package was moved.
+        foreach (string d in BackupLocations.Load())
+        {
+            if (!dirs.Contains(d, StringComparer.OrdinalIgnoreCase))
+            {
+                dirs.Add(d);
+            }
+        }
+
         return dirs;
     }
 
     /// <summary>All backups of this package in all candidate folders, newest first.</summary>
-    public static List<BackupSession> FindForPackage(PackageContext pkg)
+    public static List<BackupSession> FindForPackage(PackageContext pkg) =>
+        FindForPackage(pkg, TrySha256(pkg.LayoutPath));
+
+    /// <summary>All backups of this package in all candidate folders, newest first. Includes backups from before a move.</summary>
+    public static List<BackupSession> FindForPackage(PackageContext pkg, string? currentLayoutHash)
     {
         var all = new List<BackupSession>();
         foreach (string baseDir in CandidateBaseDirs(pkg))
         {
             try
             {
-                all.AddRange(FindAll(baseDir, pkg.Root));
+                all.AddRange(FindAll(baseDir, pkg.Root, currentLayoutHash));
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {
@@ -301,10 +345,75 @@ public sealed class BackupSession
             ? Directory.EnumerateFiles(FilesDir, "*", SearchOption.AllDirectories)
             : [];
 
+    /// <summary>Bytes the backup takes on disk.</summary>
+    public long SizeBytes()
+    {
+        try
+        {
+            return Directory.Exists(Dir)
+                ? Directory.EnumerateFiles(Dir, "*", SearchOption.AllDirectories).Sum(f => new FileInfo(f).Length)
+                : 0;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return 0;
+        }
+    }
+
+    /// <summary>
+    /// Deletes this backup for good. Afterwards "Restore original" is no longer possible for this run.
+    /// Only folders that look like one of our backups are deleted, and never anything inside the package.
+    /// </summary>
+    public void Delete()
+    {
+        if (Info.Status is "running" or "incomplete")
+        {
+            throw new UserException("This backup belongs to an unfinished run. Please restore the original first.");
+        }
+
+        if (!File.Exists(InfoPath) || !Path.GetFileName(Path.GetDirectoryName(Dir) ?? string.Empty)
+                .Equals("FSLTL-Downscaler-Backup", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new UserException($"{Dir} doesn't look like a backup of FSLTL Downscaler. Nothing was deleted.");
+        }
+
+        if (!string.IsNullOrEmpty(Info.PackageRoot) && IsInside(Dir, Info.PackageRoot))
+        {
+            throw new UserException("The backup is inside the package folder. Nothing was deleted.");
+        }
+
+        // Read-only files would stop Directory.Delete halfway.
+        foreach (string f in Directory.EnumerateFiles(Dir, "*", SearchOption.AllDirectories))
+        {
+            File.SetAttributes(f, FileAttributes.Normal);
+        }
+
+        Directory.Delete(Dir, recursive: true);
+
+        // Remove the base folder as well once it is empty.
+        var parent = Directory.GetParent(Dir);
+        if (parent is { Exists: true } && !parent.EnumerateFileSystemInfos().Any())
+        {
+            parent.Delete();
+        }
+    }
+
     public static string Sha256(string path)
     {
         using var fs = File.OpenRead(path);
         return Convert.ToHexString(SHA256.HashData(fs));
+    }
+
+    public static string? TrySha256(string path)
+    {
+        try
+        {
+            return File.Exists(path) ? Sha256(path) : null;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return null;
+        }
     }
 
     public static bool IsInside(string candidate, string folder)

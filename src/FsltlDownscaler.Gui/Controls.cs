@@ -424,3 +424,91 @@ internal sealed class SizeBar : Control
         }
     }
 }
+
+/// <summary>
+/// A tiny cat in the corner. No function, just an easter egg for people who look closely.
+/// Hover: it turns to the accent color and says hello. Click: it blinks.
+/// </summary>
+internal sealed class CatMark : Control
+{
+    private bool _hover;
+    private bool _blink;
+    private readonly System.Windows.Forms.Timer _blinkTimer = new() { Interval = 180 };
+
+    public CatMark()
+    {
+        SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
+        Size = new Size(16, 16);
+        TabStop = false;
+        _blinkTimer.Tick += (_, _) =>
+        {
+            _blinkTimer.Stop();
+            _blink = false;
+            Invalidate();
+        };
+    }
+
+    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+    public Color CanvasColor { get; set; } = Color.White;
+
+    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+    public Color CatColor { get; set; } = Color.Gray;
+
+    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+    public Color HoverColor { get; set; } = Color.SteelBlue;
+
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        var g = e.Graphics;
+        g.Clear(CanvasColor);
+        g.SmoothingMode = SmoothingMode.AntiAlias;
+
+        // Drawn on a 16 x 16 grid and scaled to the control.
+        float s = Math.Min(Width, Height) / 16f;
+        PointF P(float x, float y) => new(x * s, y * s);
+
+        using var cat = new GraphicsPath(FillMode.Winding);
+        cat.AddPolygon(new[] { P(2.2f, 8f), P(3f, 1.5f), P(7.2f, 5f) });
+        cat.AddPolygon(new[] { P(13.8f, 8f), P(13f, 1.5f), P(8.8f, 5f) });
+        cat.AddEllipse(2f * s, 4f * s, 12f * s, 10.5f * s);
+
+        using (var fill = new SolidBrush(_hover ? HoverColor : CatColor))
+        {
+            g.FillPath(fill, cat);
+        }
+
+        using var eye = new SolidBrush(CanvasColor);
+        if (_blink)
+        {
+            g.FillRectangle(eye, 4.6f * s, 8.9f * s, 2.2f * s, 0.7f * s);
+            g.FillRectangle(eye, 9.2f * s, 8.9f * s, 2.2f * s, 0.7f * s);
+        }
+        else
+        {
+            g.FillEllipse(eye, 5f * s, 7.6f * s, 1.6f * s, 2.6f * s);
+            g.FillEllipse(eye, 9.4f * s, 7.6f * s, 1.6f * s, 2.6f * s);
+        }
+    }
+
+    protected override void OnMouseEnter(EventArgs e) { _hover = true; Invalidate(); base.OnMouseEnter(e); }
+    protected override void OnMouseLeave(EventArgs e) { _hover = false; Invalidate(); base.OnMouseLeave(e); }
+
+    protected override void OnClick(EventArgs e)
+    {
+        _blink = true;
+        Invalidate();
+        _blinkTimer.Stop();
+        _blinkTimer.Start();
+        base.OnClick(e);
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing)
+        {
+            _blinkTimer.Dispose();
+        }
+
+        base.Dispose(disposing);
+    }
+}

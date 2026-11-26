@@ -29,15 +29,22 @@ BACKUP AND DISK SPACE
 The original textures are moved to a folder called "FSLTL-Downscaler-Backup"
 next to your Community folder. If FSLTL is linked into the Community folder,
 the backup is created on the same drive as the real FSLTL folder. Disk space is
-only freed once you delete that folder. Keep it until you're sure everything
-works in MSFS.
+only freed once you delete the backup with the "Delete backup" button.
+Keep it until you're sure everything works in MSFS. After
+deleting it, "Restore original" is no longer possible.
 
 UNDO
 Click "Restore original" to put the original textures back.
 
 AFTER AN FSLTL UPDATE
 The FSLTL installer brings back the full-size textures. Run the tool again.
-An old backup from before the update can then be deleted.
+The tool shows when an old backup from before the update is left over and
+offers to delete it. It can't be restored into the new FSLTL version.
+
+PROBLEMS
+Click "Advanced" and then "Copy diagnostics". Paste the text into your comment
+on Flightsim.to. It contains folder paths, which may include your Windows user
+name. Nothing is sent anywhere by the tool.
 
 UNINSTALL
 Delete FSLTL-Downscaler.exe. Settings are stored in %APPDATA%\FSLTL-Downscaler.

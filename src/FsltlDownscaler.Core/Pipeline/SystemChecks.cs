@@ -30,22 +30,21 @@ public static class SystemChecks
     }
 
     /// <summary>
-    /// Same drive: originals are moved, only the new files need space.
-    /// Other drive: originals are copied over as well.
+    /// Same volume: originals are moved, only the new files need space.
+    /// Other volume: originals are copied over as well.
+    /// Volumes are compared by their mount point, so a drive mounted into a folder counts as its own volume.
     /// </summary>
     public static (long Required, long Available) CheckSpace(string packageRoot, string backupDir, Plan plan)
     {
-        string pkgDrive = Path.GetPathRoot(Path.GetFullPath(packageRoot)) ?? string.Empty;
-        string bakDrive = Path.GetPathRoot(Path.GetFullPath(backupDir)) ?? string.Empty;
-        bool sameDrive = string.Equals(pkgDrive, bakDrive, StringComparison.OrdinalIgnoreCase);
+        bool sameVolume = PathResolver.SameVolume(packageRoot, PathResolver.NearestExisting(backupDir));
 
         long newBytes = plan.ToProcess.Sum(i => i.NewSize);
         long oldBytes = plan.ToProcess.Sum(i => i.OldSize);
         long metaBytes = 64L * 1024 * 1024;
-        long required = sameDrive ? newBytes + metaBytes : newBytes + oldBytes + metaBytes;
+        long required = sameVolume ? newBytes + metaBytes : newBytes + oldBytes + metaBytes;
         required += required / 10; // 10 % margin
 
-        long available = new DriveInfo(bakDrive).AvailableFreeSpace;
+        long available = PathResolver.FreeBytes(backupDir);
         return (required, available);
     }
 }

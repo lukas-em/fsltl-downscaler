@@ -79,6 +79,54 @@ public static class PathResolver
         return ra.Length > 0 && string.Equals(ra, rb, StringComparison.OrdinalIgnoreCase);
     }
 
+    /// <summary>
+    /// The mount point of the volume that holds <paramref name="path"/>, e.g. "D:\" or "E:\Games\SSD1\".
+    /// Links are resolved and a folder that doesn't exist yet is looked up through its nearest existing parent.
+    /// </summary>
+    public static string VolumeRootOf(string path) => VolumeRoot(TryResolveFinal(NearestExisting(path)));
+
+    /// <summary>
+    /// Free space for the current user on the volume that holds <paramref name="path"/>.
+    /// Unlike DriveInfo this is correct for drives mounted into a folder.
+    /// </summary>
+    public static long FreeBytes(string path)
+    {
+        string existing = TryResolveFinal(NearestExisting(path));
+        if (File.Exists(existing))
+        {
+            existing = Path.GetDirectoryName(existing) ?? existing;
+        }
+
+        if (OperatingSystem.IsWindows())
+        {
+            string dir = existing.EndsWith('\\') ? existing : existing + "\\";
+            if (GetDiskFreeSpaceExW(dir, out ulong free, out _, out _))
+            {
+                return free > long.MaxValue ? long.MaxValue : (long)free;
+            }
+        }
+
+        return new DriveInfo(Path.GetPathRoot(existing) ?? existing).AvailableFreeSpace;
+    }
+
+    /// <summary>The path itself if it exists, otherwise its nearest existing parent folder.</summary>
+    public static string NearestExisting(string path)
+    {
+        string current = TrimEnd(Path.GetFullPath(path));
+        while (!Directory.Exists(current) && !File.Exists(current))
+        {
+            string? parent = Path.GetDirectoryName(current);
+            if (string.IsNullOrEmpty(parent) || string.Equals(parent, current, StringComparison.OrdinalIgnoreCase))
+            {
+                break;
+            }
+
+            current = parent;
+        }
+
+        return current;
+    }
+
     /// <summary>Replaces the first linked folder in the path by its target. Null if the path contains no link to follow.</summary>
     private static string? ResolveFirstLink(string full)
     {
@@ -148,6 +196,10 @@ public static class PathResolver
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool GetVolumePathNameW(string lpszFileName, [Out] char[] lpszVolumePathName, uint cchBufferLength);
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetDiskFreeSpaceExW(string lpDirectoryName, out ulong lpFreeBytesAvailable, out ulong lpTotalNumberOfBytes, out ulong lpTotalNumberOfFreeBytes);
 #pragma warning restore SYSLIB1054
 
     /// <summary>Removes trailing separators, but keeps the root ("D:\").</summary>

@@ -14,7 +14,9 @@ Example: FSLTL 1.7.0 at 1024 px shrinks from 55.9 GB to 5.9 GB.
 4. The tool finds FSLTL for MSFS 2020 and MSFS 2024 automatically. If you have both, click "Change" to switch. If FSLTL isn't found, click "Change" and select the `fsltl-traffic-base` folder inside your Community folder. Linked folders (e.g. Addon Linker) are supported.
 5. Choose a texture size and click "Downscale".
 
-Click "Restore original" to put the original textures back. After an FSLTL update the full-size textures are back. Just run the tool again.
+Click "Restore original" to put the original textures back. After an FSLTL update the full-size textures are back. Just run the tool again. The tool tells you when an old backup from before the update is left over and offers to delete it.
+
+Something isn't working? Click "Advanced" and then "Copy diagnostics", and paste the text into your comment on Flightsim.to or into a GitHub issue.
 
 ## How it works
 
@@ -26,7 +28,7 @@ Click "Restore original" to put the original textures back. After an FSLTL updat
 
 ## Safety
 
-* Every original file is moved to `FSLTL-Downscaler-Backup` next to your Community folder before anything is replaced. If FSLTL is linked into the Community folder, the backup is created on the same drive as the real FSLTL folder. Disk space is only freed once you delete that folder.
+* Every original file is moved to `FSLTL-Downscaler-Backup` next to your Community folder before anything is replaced. If FSLTL is linked into the Community folder, the backup is created on the same drive as the real FSLTL folder. If you move the FSLTL folder later, the tool still finds its backup. Disk space is only freed once you delete the backup with the "Delete backup" button. After that, "Restore original" is no longer possible.
 * No internet access, no admin rights, no telemetry.
 * Windows 10 or 11, 64 bit. No installation needed.
 * The program isn't code-signed yet. If Windows SmartScreen appears, click "More info" and then "Run anyway". You can check the file against the SHA256 checksum on the download page.
