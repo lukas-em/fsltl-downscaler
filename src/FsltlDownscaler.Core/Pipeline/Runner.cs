@@ -13,8 +13,12 @@ public static class Runner
 {
     private sealed record Done(string RelPath, long OldLayoutSize, long NewSize, long FileTime, bool InLayout);
 
+    /// <summary>
+    /// With <see cref="BackupMode.Zip"/> the run keeps its originals in a folder like <see cref="BackupMode.Folder"/>.
+    /// The caller packs them afterwards with <see cref="BackupSession.CompressToZip"/>.
+    /// </summary>
     public static RunResult Execute(PackageContext pkg, Plan plan, string backupBaseDir, Action<string> log, CancellationToken ct,
-        IProgress<(int Done, int Total)>? progress = null)
+        IProgress<(int Done, int Total)>? progress = null, BackupMode mode = BackupMode.Folder)
     {
         var layout = LayoutFile.Load(pkg.LayoutPath);
         var (manifestText, manifestBom) = TextFiles.ReadUtf8(pkg.ManifestPath);
@@ -24,8 +28,10 @@ public static class Runner
         long entrySum = layout.SumOfSizes();
         bool totalIncludesMeta = oldTotal == entrySum + oldLayoutBytes + oldManifestBytes;
 
-        var session = BackupSession.Create(backupBaseDir, pkg, plan.Target, plan.GenerateMips);
-        log($"Backup folder: {session.Dir}");
+        var session = BackupSession.Create(backupBaseDir, pkg, plan.Target, plan.GenerateMips, mode);
+        log(mode == BackupMode.None
+            ? $"No backup: the original textures are deleted. Run log: {session.Dir}"
+            : $"Backup folder: {session.Dir}");
 
         var done = new ConcurrentBag<Done>();
         var errors = new ConcurrentQueue<string>();

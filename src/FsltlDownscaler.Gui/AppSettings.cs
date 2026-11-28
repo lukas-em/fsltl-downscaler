@@ -1,4 +1,6 @@
 using System.Text.Json;
+using System.Text.Json.Serialization;
+using FsltlDownscaler.Safety;
 
 namespace FsltlDownscaler.Gui;
 
@@ -9,6 +11,13 @@ internal sealed class AppSettings
     public const int CurrentDisclaimerVersion = 1;
 
     public int DisclaimerAcceptedVersion { get; set; }
+
+    /// <summary>Backup choice under Advanced options. Remembered for the next start.</summary>
+    [JsonConverter(typeof(JsonStringEnumConverter<BackupMode>))]
+    public BackupMode BackupMode { get; set; } = BackupMode.Folder;
+
+    /// <summary>The user has picked a backup mode, either before the first downscale or under Advanced options.</summary>
+    public bool BackupModeChosen { get; set; }
 
     private static string FilePath => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "FSLTL-Downscaler", "settings.json");

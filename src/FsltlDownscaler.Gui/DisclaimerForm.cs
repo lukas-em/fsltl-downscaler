@@ -54,10 +54,10 @@ internal sealed class DisclaimerForm : Form
 
         AddParagraph(root, "Use at your own risk", bold: true);
         AddParagraph(root,
-            "This tool changes files of your FSLTL installation. It keeps a backup of every original file and can put " +
-            "everything back, but it comes without any warranty. The author isn't liable for damage or data loss.");
+            "This tool changes files of your FSLTL installation. Unless you turn the backup off, it keeps every original file " +
+            "and can put everything back, but it comes without any warranty. The author isn't liable for damage or data loss.");
         AddParagraph(root,
-            "Close MSFS before you use the tool, and keep the backup folder until you're sure everything works.");
+            "Close MSFS before you use the tool, and keep the backup until you're sure everything works.");
         AddParagraph(root, "Made with AI", bold: true);
         AddParagraph(root,
             "This tool was written with the help of AI (Claude by Anthropic). It was tested by the author.");

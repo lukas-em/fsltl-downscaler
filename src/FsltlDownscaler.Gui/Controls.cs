@@ -254,6 +254,7 @@ internal sealed class RoundButton : Button
 internal sealed class CheckOption : Control
 {
     private bool _checked;
+    private bool _radio;
 
     public CheckOption()
     {
@@ -272,6 +273,19 @@ internal sealed class CheckOption : Control
 
     [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
     public Color CanvasColor { get; set; } = Color.White;
+
+    /// <summary>Round indicator. A click only checks it, the form unchecks the others of the group.</summary>
+    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+    public bool Radio
+    {
+        get => _radio;
+        set
+        {
+            _radio = value;
+            AccessibleRole = value ? AccessibleRole.RadioButton : AccessibleRole.CheckButton;
+            Invalidate();
+        }
+    }
 
     [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
     public bool Checked
@@ -315,6 +329,31 @@ internal sealed class CheckOption : Control
 
         int box = Box;
         var r = new Rectangle(1, (Height - box) / 2, box - 2, box - 2);
+        if (_radio)
+        {
+            Color ring = _checked && Enabled ? t.Accent : t.TextSecondary;
+            using (var fillBrush = new SolidBrush(t.Card))
+            {
+                g.FillEllipse(fillBrush, r);
+            }
+
+            using (var pen = new Pen(ring, LogicalToDeviceUnits(1)))
+            {
+                g.DrawEllipse(pen, r);
+            }
+
+            if (_checked)
+            {
+                int inset = r.Width / 4;
+                var dot = Rectangle.Inflate(r, -inset, -inset);
+                using var dotBrush = new SolidBrush(Enabled ? t.Accent : t.TextMuted);
+                g.FillEllipse(dotBrush, dot);
+            }
+
+            DrawLabel(g, t, box);
+            return;
+        }
+
         using (var path = Shapes.Rounded(r, LogicalToDeviceUnits(4)))
         {
             Color fill = _checked && Enabled ? t.Accent : t.Card;
@@ -337,6 +376,11 @@ internal sealed class CheckOption : Control
             });
         }
 
+        DrawLabel(g, t, box);
+    }
+
+    private void DrawLabel(Graphics g, Theme t, int box)
+    {
         var textRect = new Rectangle(box + Gap, 0, Width - box - Gap, Height);
         TextRenderer.DrawText(g, Text, Font, textRect, Enabled ? t.Text : t.TextMuted,
             TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine);
@@ -351,7 +395,8 @@ internal sealed class CheckOption : Control
     {
         if (Enabled)
         {
-            Checked = !Checked;
+            // A radio option stays checked when clicked again.
+            Checked = _radio || !Checked;
         }
 
         base.OnClick(e);

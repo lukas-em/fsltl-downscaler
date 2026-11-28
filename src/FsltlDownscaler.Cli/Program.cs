@@ -14,13 +14,17 @@ internal static class Program
 
         Usage:
           FsltlDownscaler analyze <package> [--target 1024] [--no-mips]
-          FsltlDownscaler run     <package> --target <2048|1024|512> [--backup-dir <dir>] [--no-mips] [--yes]
-          FsltlDownscaler restore <package> [--backup-dir <dir>] [--force]
-          FsltlDownscaler verify  <package>
+          FsltlDownscaler run      <package> --target <2048|1024|512> [--backup folder|zip|none] [--backup-dir <dir>] [--no-mips] [--yes]
+          FsltlDownscaler restore  <package> [--backup-dir <dir>] [--force]
+          FsltlDownscaler compress <package> [--backup-dir <dir>]
+          FsltlDownscaler repair   <package> [--backup-dir <dir>]
+          FsltlDownscaler verify   <package>
 
         <package>     The fsltl-traffic-base folder.
         --target      Maximum texture size (long side). Default 1024.
         --no-mips     Do not generate mip maps for textures that have none.
+        --backup      folder (default): originals are moved. zip: moved, then packed into files.zip.
+                      none: originals are deleted, no restore possible.
         --backup-dir  Where backups go. Default: <folder above Community>\FSLTL-Downscaler-Backup (links are resolved)
         --yes         Do not ask for confirmation.
         --force       Restore even though layout.json changed after the run.
@@ -51,6 +55,8 @@ internal static class Program
                 "analyze" => Analyze(pkg, opts),
                 "run" => Run(pkg, opts),
                 "restore" => Restore(pkg, opts),
+                "compress" => Compress(pkg, opts),
+                "repair" => Repair(pkg, opts),
                 "verify" => Verify(pkg),
                 _ => throw new UserException($"Unknown command '{args[0]}'.{Environment.NewLine}{Environment.NewLine}{Usage}"),
             };
@@ -89,7 +95,7 @@ internal static class Program
         var unfinished = sessions.FirstOrDefault(s => s.Info.Status is "running" or "incomplete");
         if (unfinished is not null)
         {
-            throw new UserException($"An unfinished run was found ({unfinished.Dir}). Run 'restore' first.");
+            throw new UserException($"An unfinished run was found ({unfinished.Dir}). Run '{(unfinished.IsNoBackup ? "repair" : "restore")}' first.");
         }
 
         var plan = BuildPlan(pkg, o);
@@ -101,14 +107,14 @@ internal static class Program
             return 0;
         }
 
-        var (required, available) = SystemChecks.CheckSpace(pkg.Root, backupBase, plan);
+        var (required, available) = SystemChecks.CheckSpace(pkg.Root, backupBase, plan, o.Mode);
         Console.WriteLine($"Disk space needed: {Gb(required)}, available: {Gb(available)}");
         if (available < required)
         {
             throw new UserException("Not enough free disk space.");
         }
 
-        Console.WriteLine($"Backup base folder: {backupBase}");
+        Console.WriteLine($"Backup base folder: {backupBase}, mode: {o.Mode}");
         if (!o.Yes)
         {
             Console.Write("Type YES to start: ");
@@ -126,7 +132,13 @@ internal static class Program
             cts.Cancel();
         };
 
-        var result = Runner.Execute(pkg, plan, backupBase, Console.WriteLine, cts.Token);
+        var result = Runner.Execute(pkg, plan, backupBase, Console.WriteLine, cts.Token, null, o.Mode);
+        if (o.Mode == BackupMode.Zip && result.Replaced > 0 && result.Status is "completed" or "cancelled" or "failed"
+            && BackupSession.TryLoad(result.SessionDir) is { } done)
+        {
+            long zipBytes = done.CompressToZip(Console.WriteLine, null, CancellationToken.None);
+            Console.WriteLine($"Backup compressed: {Gb(done.Info.BytesBefore)} -> {Gb(zipBytes)}");
+        }
 
         Console.WriteLine();
         Console.WriteLine($"Status:   {result.Status}");
@@ -161,6 +173,30 @@ internal static class Program
 
         int n = Restorer.Restore(pkg, session, o.Force, Console.WriteLine);
         Console.WriteLine($"Restored {n} files plus layout.json and manifest.json.");
+        Console.WriteLine();
+        return Verify(pkg);
+    }
+
+    private static int Compress(PackageContext pkg, Options o)
+    {
+        int n = 0;
+        foreach (var s in Sessions(pkg, o).Where(s => !s.IsNoBackup && !s.IsZip && s.Info.Status is "completed" or "cancelled" or "failed"))
+        {
+            long zipBytes = s.CompressToZip(Console.WriteLine, null, CancellationToken.None);
+            Console.WriteLine($"{Path.GetFileName(s.Dir)}: {Gb(s.Info.BytesBefore)} -> {Gb(zipBytes)}");
+            n++;
+        }
+
+        Console.WriteLine(n == 0 ? "No backup to compress found." : $"{n} backup(s) compressed.");
+        return 0;
+    }
+
+    private static int Repair(PackageContext pkg, Options o)
+    {
+        SystemChecks.EnsureSimulatorNotRunning();
+        var session = Sessions(pkg, o).FirstOrDefault(s => s.Info.Status is "running" or "incomplete" && s.IsNoBackup)
+            ?? throw new UserException("No interrupted run without backup found.");
+        Repairer.Repair(pkg, session, Console.WriteLine);
         Console.WriteLine();
         return Verify(pkg);
     }
@@ -242,7 +278,7 @@ internal static class Program
         Console.WriteLine("Previous runs:");
         foreach (var s in sessions)
         {
-            Console.WriteLine($"  {Path.GetFileName(s.Dir)}: target {s.Info.Target}, status {s.Info.Status}, {s.Info.FilesReplaced} files");
+            Console.WriteLine($"  {Path.GetFileName(s.Dir)}: target {s.Info.Target}, status {s.Info.Status}, {s.Info.FilesReplaced} files, backup {s.Info.BackupFormat}");
         }
     }
 
@@ -261,6 +297,7 @@ internal static class Program
         public bool NoMips { get; private set; }
         public bool Yes { get; private set; }
         public bool Force { get; private set; }
+        public BackupMode Mode { get; private set; } = BackupMode.Folder;
 
         public static Options Parse(string[] a)
         {
@@ -284,6 +321,15 @@ internal static class Program
                         }
 
                         o.BackupDir = a[++i];
+                        break;
+                    case "--backup":
+                        o.Mode = i + 1 < a.Length ? a[++i].ToLowerInvariant() switch
+                        {
+                            "folder" => BackupMode.Folder,
+                            "zip" => BackupMode.Zip,
+                            "none" => BackupMode.None,
+                            _ => throw new UserException("--backup must be folder, zip or none."),
+                        } : throw new UserException("--backup must be folder, zip or none.");
                         break;
                     case "--no-mips":
                         o.NoMips = true;

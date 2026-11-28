@@ -33,8 +33,19 @@ only freed once you delete the backup with the "Delete backup" button.
 Keep it until you're sure everything works in MSFS. After
 deleting it, "Restore original" is no longer possible.
 
+Under "Advanced options" you can choose how the originals are kept:
+- Folder: fast. The backup takes as much space as the original textures.
+- ZIP: the originals are compressed after downscaling. FSLTL textures shrink
+  to about a fifth (55 GB to roughly 10 GB). This takes a few extra minutes.
+  Every file is checked against its original before the folder is removed.
+  An existing folder backup can be compressed with "Compress to ZIP".
+- No backup: the originals are deleted. This frees the most space, but
+  "Restore original" isn't possible. To get the full-size textures back,
+  reinstall FSLTL.
+
 UNDO
-Click "Restore original" to put the original textures back.
+Click "Restore original" to put the original textures back. A ZIP backup is
+unpacked for this and needs the full size of the originals as free space.
 
 AFTER AN FSLTL UPDATE
 The FSLTL installer brings back the full-size textures. Run the tool again.

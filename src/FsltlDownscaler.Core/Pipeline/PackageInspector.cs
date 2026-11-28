@@ -51,6 +51,16 @@ public sealed record PackageStatus(
 
     /// <summary>Set when the restorable backup was made while the package was in another folder.</summary>
     public string? MovedFrom { get; init; }
+
+    /// <summary>An interrupted run without backup. It can't be restored, but layout.json can be repaired.</summary>
+    public BackupSession? Repairable { get; init; }
+
+    /// <summary>The last run was made without a backup. "Restore original" is not possible.</summary>
+    public bool LastRunWithoutBackup { get; init; }
+
+    /// <summary>Backups that keep their originals in a folder and could be packed into a ZIP file.</summary>
+    public IEnumerable<BackupSession> Compressible =>
+        Backups.Where(b => !b.IsZip && b.Info.FilesReplaced > 0 && b.Info.Status is "completed" or "cancelled" or "failed");
 }
 
 /// <summary>Works out what state a package is in, for a clear status line in the UI.</summary>
@@ -64,42 +74,53 @@ public static class PackageInspector
 
         var sessions = BackupSession.FindForPackage(pkg, currentHash);
         var sizes = sessions.ToDictionary(s => s.Dir, s => s.SizeBytes(), StringComparer.OrdinalIgnoreCase);
-        var real = sessions.Where(s => s.Info.Status != "restored").ToList();
+
+        // Runs without backup hold no originals. They only tell what was done to the package.
+        var real = sessions.Where(s => s.Info.Status != "restored" && !s.IsNoBackup).ToList();
         var leftovers = sessions.Where(s => s.Info.Status == "restored").ToList();
         long backupBytes = real.Sum(s => sizes[s.Dir]);
-        var restorable = real.FirstOrDefault();
 
-        PackageStatus Make(PackageKind kind, int? target, DateTime? when, BackupSession? r, IReadOnlyList<BackupSession> outdated) =>
+        PackageStatus Make(PackageKind kind, int? target, DateTime? when, BackupSession? r, IReadOnlyList<BackupSession> outdated,
+            IReadOnlyList<BackupSession> unusedRuns, BackupSession? repairable = null, bool noBackup = false) =>
             new(kind, total, target, when, r)
             {
                 Backups = real,
                 BackupBytes = backupBytes,
                 BackupFiles = real.Sum(s => s.Info.FilesReplaced),
-                Leftovers = leftovers,
+                Leftovers = [.. leftovers, .. unusedRuns],
                 Outdated = outdated,
                 OutdatedBytes = outdated.Sum(s => sizes[s.Dir]),
                 MovedFrom = r is not null && r.IsFromOtherFolder(pkg) ? r.Info.PackageRoot : null,
+                Repairable = repairable,
+                LastRunWithoutBackup = noBackup,
             };
 
-        if (sessions.Any(s => s.Info.Status is "running" or "incomplete"))
+        var interrupted = sessions.FirstOrDefault(s => s.Info.Status is "running" or "incomplete");
+        if (interrupted is not null)
         {
-            return Make(PackageKind.Interrupted, null, null, restorable, []);
+            return interrupted.IsNoBackup
+                ? Make(PackageKind.Interrupted, null, null, null, [], [], repairable: interrupted, noBackup: true)
+                : Make(PackageKind.Interrupted, null, null, interrupted, [], []);
         }
 
         var latest = sessions.FirstOrDefault(s => s.Info.Status is "completed" or "cancelled" or "failed");
         if (latest is not null && string.Equals(latest.Info.FinalLayoutSha256, currentHash, StringComparison.OrdinalIgnoreCase))
         {
-            return Make(PackageKind.DownscaledByTool, latest.Info.Target,
-                latest.Info.FinishedUtc ?? latest.Info.StartedUtc, restorable, OlderThanChain(sessions, latest));
+            // Restore walks back one run at a time. A run without backup ends the way back.
+            var older = OlderThanChain(sessions, latest);
+            return Make(PackageKind.DownscaledByTool, latest.Info.Target, latest.Info.FinishedUtc ?? latest.Info.StartedUtc,
+                latest.IsNoBackup ? null : latest,
+                older.Where(s => !s.IsNoBackup).ToList(), older.Where(s => s.IsNoBackup).ToList(), noBackup: latest.IsNoBackup);
         }
 
         // The package doesn't match the last run any more. layout.json only changes like this when
         // FSLTL was updated or reinstalled. The originals in these backups belong to the old installation.
-        var outdated = sessions.Where(s => s.Info.Status is "completed" or "cancelled" or "failed").ToList();
+        var finished = sessions.Where(s => s.Info.Status is "completed" or "cancelled" or "failed").ToList();
 
         int supported = scan.Supported;
         bool mostlySmall = supported > 0 && scan.LargerThan(1024) < supported * 0.02;
-        return Make(mostlySmall ? PackageKind.ReducedOther : PackageKind.Original, null, null, null, outdated);
+        return Make(mostlySmall ? PackageKind.ReducedOther : PackageKind.Original, null, null, null,
+            finished.Where(s => !s.IsNoBackup).ToList(), finished.Where(s => s.IsNoBackup).ToList());
     }
 
     /// <summary>

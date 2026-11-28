@@ -1,4 +1,8 @@
+using System.Collections.Concurrent;
+using System.Globalization;
+using System.IO.Compression;
 using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using FsltlDownscaler.Package;
 
@@ -20,11 +24,18 @@ public sealed class SessionInfo
     public long BytesBefore { get; set; }
     public long BytesAfter { get; set; }
     public string ToolVersion { get; set; } = string.Empty;
+
+    /// <summary>folder, zip or none (see <see cref="BackupFormats"/>). Backups made by version 1.2 and older count as folder.</summary>
+    public string BackupFormat { get; set; } = BackupFormats.Folder;
+
+    /// <summary>Bytes of files.zip once the backup is compressed.</summary>
+    public long ZipBytes { get; set; }
 }
 
 /// <summary>
 /// One run of the tool. Lives outside the package folder.
 /// Originals are moved (not copied) into files/, so on the same drive the backup costs no extra space.
+/// files/ can be packed into files.zip later. A run without backup only keeps layout.json, manifest.json and the journal.
 /// </summary>
 public sealed class BackupSession
 {
@@ -44,6 +55,21 @@ public sealed class BackupSession
     public string TmpDir => Path.Combine(Dir, "tmp");
     public string InfoPath => Path.Combine(Dir, "session.json");
     public string JournalPath => Path.Combine(Dir, "journal.log");
+    public string ZipPath => Path.Combine(Dir, "files.zip");
+    private string ZipPartialPath => ZipPath + ".partial";
+    private string ZipIndexPath => Path.Combine(MetaDir, "zip-index.tsv");
+
+    /// <summary>The run was made without a backup. Its originals are gone.</summary>
+    public bool IsNoBackup => Info.BackupFormat == BackupFormats.None;
+
+    /// <summary>The originals are in files.zip.</summary>
+    public bool IsZip => Info.BackupFormat == BackupFormats.Zip;
+
+    /// <summary>True when there is at least one original texture in this backup.</summary>
+    public bool HasOriginals => !IsNoBackup && (File.Exists(ZipPath) || BackedUpFiles().Any());
+
+    /// <summary>Set on first use: the tmp folder is on the drive of the package (runs without backup only).</summary>
+    private bool? _tmpOnPackageVolume;
 
     /// <summary>Default backup folder: next to the Community folder, never inside it.</summary>
     public static string DefaultBaseDir(string packageRoot)
@@ -54,7 +80,8 @@ public sealed class BackupSession
         return Path.Combine(baseDir, "FSLTL-Downscaler-Backup");
     }
 
-    public static BackupSession Create(string baseDir, PackageContext pkg, int target, bool generateMips)
+    public static BackupSession Create(string baseDir, PackageContext pkg, int target, bool generateMips,
+        BackupMode mode = BackupMode.Folder)
     {
         string full = Path.GetFullPath(baseDir);
         if (IsInside(full, pkg.Root))
@@ -75,10 +102,16 @@ public sealed class BackupSession
             StartedUtc = DateTime.UtcNow,
             OriginalLayoutSha256 = Sha256(pkg.LayoutPath),
             ToolVersion = typeof(BackupSession).Assembly.GetName().Version?.ToString() ?? "?",
+            // A ZIP backup starts as a folder. It is packed once the run is done.
+            BackupFormat = mode == BackupMode.None ? BackupFormats.None : BackupFormats.Folder,
         };
 
         var session = new BackupSession(dir, info);
-        Directory.CreateDirectory(session.FilesDir);
+        if (mode != BackupMode.None)
+        {
+            Directory.CreateDirectory(session.FilesDir);
+        }
+
         Directory.CreateDirectory(session.MetaDir);
         Directory.CreateDirectory(session.TmpDir);
         File.Copy(pkg.LayoutPath, Path.Combine(session.MetaDir, "layout.json"));
@@ -228,23 +261,27 @@ public sealed class BackupSession
     /// Replaces one package file safely:
     /// 1. new content to tmp and verified, 2. original moved to backup, 3. tmp moved into place.
     /// If step 3 fails the original is moved back.
+    /// Without backup the tmp file replaces the original in one step and the original is gone.
     /// </summary>
     public void ReplaceFile(PackageContext pkg, string fullPath, byte[] newContent)
     {
         string rel = pkg.Relative(fullPath);
+        string tmp = Path.Combine(TmpDir, Guid.NewGuid().ToString("N") + ".dds");
+        if (IsNoBackup)
+        {
+            WriteTmp(tmp, newContent);
+            ReplaceWithoutBackup(pkg, tmp, fullPath, newContent.LongLength);
+            Journal($"replaced\t{rel}\t{newContent.LongLength}\tno backup");
+            return;
+        }
+
         string backupPath = Path.Combine(FilesDir, rel.Replace('/', Path.DirectorySeparatorChar));
         if (File.Exists(backupPath))
         {
             throw new InvalidOperationException($"Backup already contains {rel}.");
         }
 
-        string tmp = Path.Combine(TmpDir, Guid.NewGuid().ToString("N") + ".dds");
-        File.WriteAllBytes(tmp, newContent);
-        if (new FileInfo(tmp).Length != newContent.LongLength)
-        {
-            File.Delete(tmp);
-            throw new IOException("Temporary file could not be written completely.");
-        }
+        WriteTmp(tmp, newContent);
 
         Directory.CreateDirectory(Path.GetDirectoryName(backupPath)!);
         File.Move(fullPath, backupPath);
@@ -261,6 +298,52 @@ public sealed class BackupSession
         Journal($"replaced\t{rel}\t{newContent.LongLength}");
     }
 
+    private static void WriteTmp(string tmp, byte[] content)
+    {
+        File.WriteAllBytes(tmp, content);
+        if (new FileInfo(tmp).Length != content.LongLength)
+        {
+            File.Delete(tmp);
+            throw new IOException("Temporary file could not be written completely.");
+        }
+    }
+
+    /// <summary>
+    /// Same drive: the tmp file is renamed over the original, so the texture is either old or new, never half written.
+    /// Other drive (linked package): copied over the original and checked.
+    /// </summary>
+    private void ReplaceWithoutBackup(PackageContext pkg, string tmp, string fullPath, long length)
+    {
+        _tmpOnPackageVolume ??= PathResolver.SameVolume(TmpDir, pkg.Root);
+        ClearReadOnly(fullPath);
+        if (_tmpOnPackageVolume == true)
+        {
+            File.Move(tmp, fullPath, overwrite: true);
+        }
+        else
+        {
+            File.Copy(tmp, fullPath, overwrite: true);
+            File.Delete(tmp);
+        }
+
+        if (new FileInfo(fullPath).Length != length)
+        {
+            throw new IOException("The new texture could not be written completely.");
+        }
+    }
+
+    public static void ClearReadOnly(string path)
+    {
+        if (File.Exists(path))
+        {
+            var attr = File.GetAttributes(path);
+            if ((attr & FileAttributes.ReadOnly) != 0)
+            {
+                File.SetAttributes(path, attr & ~FileAttributes.ReadOnly);
+            }
+        }
+    }
+
     /// <summary>
     /// Writes a package file (layout.json, manifest.json). The new content goes to tmp first.
     /// Same drive: tmp is renamed over the target. Other drive: tmp is copied over the target,
@@ -268,6 +351,7 @@ public sealed class BackupSession
     /// </summary>
     public void WriteMetaFile(string targetPath, byte[] content)
     {
+        Directory.CreateDirectory(TmpDir);
         string tmp = Path.Combine(TmpDir, Path.GetFileName(targetPath) + ".new");
         File.WriteAllBytes(tmp, content);
 
@@ -395,6 +479,307 @@ public sealed class BackupSession
         if (parent is { Exists: true } && !parent.EnumerateFileSystemInfos().Any())
         {
             parent.Delete();
+        }
+    }
+
+    // ================================================================ ZIP
+
+    /// <summary>Name of a backed-up file inside files.zip, e.g. SimObjects/Airplanes/.../texture/x.dds.</summary>
+    private string EntryName(string backedUpFile) =>
+        Path.GetRelativePath(FilesDir, backedUpFile).Replace('\\', '/');
+
+    /// <summary>
+    /// Packs the originals in files/ into files.zip. files/ is only deleted after every file in the ZIP was read back
+    /// and compared byte by byte with its original. On an error or cancel files/ stays as it is and the half-written ZIP is removed.
+    /// Returns the size of the ZIP file.
+    /// </summary>
+    public long CompressToZip(Action<string> log, IProgress<(int Done, int Total)>? progress, CancellationToken ct)
+    {
+        if (IsNoBackup)
+        {
+            throw new UserException("This run was made without a backup. There is nothing to compress.");
+        }
+
+        if (Info.Status is "running" or "incomplete" or "restored")
+        {
+            throw new UserException("Only the backup of a finished run can be compressed.");
+        }
+
+        TidyUp();
+        if (IsZip && File.Exists(ZipPath))
+        {
+            return new FileInfo(ZipPath).Length;
+        }
+
+        var files = BackedUpFiles().OrderBy(f => f, StringComparer.OrdinalIgnoreCase).ToList();
+        if (files.Count == 0)
+        {
+            throw new UserException("The backup holds no original textures.");
+        }
+
+        long total = files.Sum(f => new FileInfo(f).Length);
+        long needed = EstimateZipBytes(total) + 64L * 1024 * 1024;
+        long free = PathResolver.FreeBytes(Dir);
+        if (free < needed)
+        {
+            throw new UserException(
+                $"There isn't enough free disk space to compress the backup. Needed: about {needed / 1_000_000_000d:0.0} GB, " +
+                $"available: {free / 1_000_000_000d:0.0} GB.");
+        }
+
+        int steps = files.Count * 2;
+        string partial = ZipPartialPath;
+        try
+        {
+            var index = new StringBuilder();
+            log($"Compressing {files.Count:N0} original textures ({total / 1_000_000_000d:0.0} GB) into {ZipPath} ...");
+            using (var fs = new FileStream(partial, FileMode.Create, FileAccess.Write, FileShare.None, 1 << 20))
+            using (var zip = new ZipArchive(fs, ZipArchiveMode.Create, leaveOpen: false))
+            {
+                int done = 0;
+                foreach (var (path, data) in ReadAhead(files, ct))
+                {
+                    ct.ThrowIfCancellationRequested();
+                    string name = EntryName(path);
+                    var entry = zip.CreateEntry(name, CompressionLevel.Fastest);
+                    using (var es = entry.Open())
+                    {
+                        es.Write(data);
+                    }
+
+                    long fileTime = File.GetLastWriteTimeUtc(path).ToFileTimeUtc();
+                    index.Append(name).Append('\t').Append(data.LongLength.ToString(CultureInfo.InvariantCulture))
+                        .Append('\t').Append(fileTime.ToString(CultureInfo.InvariantCulture)).Append('\n');
+                    done++;
+                    if (done % 25 == 0 || done == files.Count)
+                    {
+                        progress?.Report((done, steps));
+                    }
+                }
+            }
+
+            log("Checking every file in the ZIP against its original ...");
+            VerifyZip(partial, files, progress, steps, ct);
+
+            // The index keeps the original file times. ZIP only stores them in 2 second steps and local time.
+            File.WriteAllText(ZipIndexPath, index.ToString(), new UTF8Encoding(false));
+            File.Move(partial, ZipPath, overwrite: true);
+        }
+        catch
+        {
+            TryDelete(partial);
+            throw;
+        }
+
+        long zipBytes = new FileInfo(ZipPath).Length;
+        Info.BackupFormat = BackupFormats.Zip;
+        Info.ZipBytes = zipBytes;
+        Save();
+        Journal($"compressed\t{files.Count}\t{total}\t{zipBytes}");
+
+        // Only now the originals in files/ may go. If this fails, TidyUp finishes it next time.
+        try
+        {
+            DeleteDirectory(FilesDir);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            log($"The folder {FilesDir} could not be removed completely ({ex.Message}). It is removed next time.");
+        }
+
+        return zipBytes;
+    }
+
+    /// <summary>FSLTL textures pack to about 20 %. Twice that leaves enough room for other textures.</summary>
+    public static long EstimateZipBytes(long originalBytes) => originalBytes * 2 / 5;
+
+    /// <summary>Reads the next files while the current one is compressed. At most three files are held in memory.</summary>
+    private static IEnumerable<(string Path, byte[] Data)> ReadAhead(IReadOnlyList<string> files, CancellationToken ct)
+    {
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        var queue = new BlockingCollection<(string, byte[])>(boundedCapacity: 3);
+        var reader = Task.Run(() =>
+        {
+            try
+            {
+                foreach (string f in files)
+                {
+                    cts.Token.ThrowIfCancellationRequested();
+                    queue.Add((f, File.ReadAllBytes(f)), cts.Token);
+                }
+            }
+            finally
+            {
+                queue.CompleteAdding();
+            }
+        });
+
+        try
+        {
+            foreach (var item in queue.GetConsumingEnumerable(cts.Token))
+            {
+                yield return item;
+            }
+
+            // Surfaces a read error of the reader.
+            reader.GetAwaiter().GetResult();
+        }
+        finally
+        {
+            cts.Cancel();
+            try
+            {
+                reader.Wait();
+            }
+            catch (AggregateException)
+            {
+                // Already handled above or caused by the cancel.
+            }
+
+            queue.Dispose();
+        }
+    }
+
+    private void VerifyZip(string zipPath, IReadOnlyList<string> files, IProgress<(int Done, int Total)>? progress, int steps, CancellationToken ct)
+    {
+        using var zip = ZipFile.OpenRead(zipPath);
+        if (zip.Entries.Count != files.Count)
+        {
+            throw new IOException($"The ZIP file holds {zip.Entries.Count:N0} files instead of {files.Count:N0}.");
+        }
+
+        var byName = new Dictionary<string, ZipArchiveEntry>(StringComparer.Ordinal);
+        foreach (var e in zip.Entries)
+        {
+            byName[e.FullName] = e;
+        }
+
+        var a = new byte[1 << 20];
+        var b = new byte[1 << 20];
+        int done = 0;
+        foreach (string f in files)
+        {
+            ct.ThrowIfCancellationRequested();
+            string name = EntryName(f);
+            long length = new FileInfo(f).Length;
+            if (!byName.TryGetValue(name, out var entry) || entry.Length != length)
+            {
+                throw new IOException($"{name} is missing in the ZIP file or has the wrong size.");
+            }
+
+            using (var src = new FileStream(f, FileMode.Open, FileAccess.Read, FileShare.Read, 1 << 16))
+            using (var packed = entry.Open())
+            {
+                while (true)
+                {
+                    int n = src.ReadAtLeast(a, a.Length, throwOnEndOfStream: false);
+                    int m = packed.ReadAtLeast(b.AsSpan(0, n == 0 ? 1 : n), n == 0 ? 1 : n, throwOnEndOfStream: false);
+                    if (n == 0)
+                    {
+                        if (m != 0)
+                        {
+                            throw new IOException($"{name} in the ZIP file is longer than the original.");
+                        }
+
+                        break;
+                    }
+
+                    if (m != n || !a.AsSpan(0, n).SequenceEqual(b.AsSpan(0, n)))
+                    {
+                        throw new IOException($"{name} in the ZIP file doesn't match the original.");
+                    }
+                }
+            }
+
+            done++;
+            if (done % 25 == 0 || done == files.Count)
+            {
+                progress?.Report((files.Count + done, steps));
+            }
+        }
+    }
+
+    /// <summary>Original file times from the index written with the ZIP. Empty if there is none.</summary>
+    public Dictionary<string, long> ReadZipIndex()
+    {
+        var result = new Dictionary<string, long>(StringComparer.Ordinal);
+        if (!File.Exists(ZipIndexPath))
+        {
+            return result;
+        }
+
+        foreach (string line in File.ReadAllLines(ZipIndexPath))
+        {
+            var parts = line.Split('\t');
+            if (parts.Length >= 3 && long.TryParse(parts[2], NumberStyles.Integer, CultureInfo.InvariantCulture, out long ft))
+            {
+                result[parts[0]] = ft;
+            }
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// Finishes what an interrupted compression or restore left behind. Never touches the only copy of an original:
+    /// files/ is only removed when a checked files.zip is registered in session.json, and the other way round.
+    /// </summary>
+    public void TidyUp()
+    {
+        try
+        {
+            TryDelete(ZipPartialPath);
+            if (IsZip && File.Exists(ZipPath))
+            {
+                if (Info.Status == "restored")
+                {
+                    // The originals are back in the package.
+                    TryDelete(ZipPath);
+                }
+                else if (Directory.Exists(FilesDir))
+                {
+                    DeleteDirectory(FilesDir);
+                }
+            }
+            else if (!IsZip && File.Exists(ZipPath) && BackedUpFiles().Any())
+            {
+                // Stopped after the ZIP was moved into place but before session.json said so. files/ is still complete.
+                TryDelete(ZipPath);
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // Tried again next time.
+        }
+    }
+
+    private static void DeleteDirectory(string dir)
+    {
+        if (!Directory.Exists(dir))
+        {
+            return;
+        }
+
+        foreach (string f in Directory.EnumerateFiles(dir, "*", SearchOption.AllDirectories))
+        {
+            File.SetAttributes(f, FileAttributes.Normal);
+        }
+
+        Directory.Delete(dir, recursive: true);
+    }
+
+    private static void TryDelete(string path)
+    {
+        try
+        {
+            if (File.Exists(path))
+            {
+                File.Delete(path);
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // Not critical.
         }
     }
 

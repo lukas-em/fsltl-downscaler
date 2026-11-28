@@ -26,7 +26,7 @@ internal sealed class MainForm : Form
 
     private static readonly (int Px, string Label)[] Sizes = [(2048, "High quality"), (1024, "Recommended"), (512, "Max performance")];
 
-    private enum PrimaryMode { ChooseFolder, Checking, Downscale, NothingToDo, Restore, Cancel, Busy }
+    private enum PrimaryMode { ChooseFolder, Checking, Downscale, NothingToDo, Restore, Repair, Cancel, Busy }
 
     private Theme _t = Theme.Current;
 
@@ -76,6 +76,11 @@ internal sealed class MainForm : Form
     // Advanced
     private readonly CardPanel _advCard = new() { Visible = false };
     private readonly CheckOption _mipsBox = new() { Checked = true, Text = "Create mip maps for textures that have none (recommended)", Margin = new Padding(0, 0, 0, 10) };
+    private readonly Label _backupModeCaption = new() { AutoSize = true, Text = "Backup of the original textures", Margin = new Padding(0, 0, 0, 4) };
+    private readonly CheckOption _modeFolder = new() { Radio = true, Text = "Folder: fast, takes as much space as the original textures", Margin = new Padding(0, 0, 0, 2) };
+    private readonly CheckOption _modeZip = new() { Radio = true, Text = "ZIP: about 80 % smaller, takes a few minutes longer", Margin = new Padding(0, 0, 0, 2) };
+    private readonly CheckOption _modeNone = new() { Radio = true, Text = "No backup: not recommended, at your own risk. \"Restore original\" isn't possible", Margin = new Padding(0, 0, 0, 10) };
+    private readonly LinkLabel _compressLink = new() { AutoSize = true, Text = "Compress to ZIP", Visible = false, Margin = new Padding(0, 8, 0, 0) };
     private readonly Label _backupLabel = new() { AutoSize = true, MaximumSize = new Size(600, 0), Margin = new Padding(0, 2, 8, 0) };
     private readonly LinkLabel _openBackupLink = new() { AutoSize = true, Text = "Open", Margin = new Padding(0, 2, 0, 0) };
     private readonly Label _backupSizeLabel = new() { AutoSize = true, Margin = new Padding(0, 8, 8, 0) };
@@ -101,7 +106,7 @@ internal sealed class MainForm : Form
         AutoSize = true,
         MaximumSize = new Size(720, 0),
         Margin = new Padding(2, 16, 0, 0),
-        Text = "Originals are moved to a backup folder and can be restored until you delete the backup. Only your local installation is changed. " +
+        Text = "Originals are kept in a backup (folder or ZIP) and can be restored until you delete it. Only your local installation is changed. " +
                "No FSLTL content is distributed with this tool. Use at your own risk. Written with the help of AI.",
     };
 
@@ -124,6 +129,9 @@ internal sealed class MainForm : Form
     private bool _busy;
     private string? _scanError;
     private (int Done, int Total)? _runProgress;
+    private string _progressTitle = "Downscaling";
+    private string? _progressUnit = "textures";
+    private BackupMode _backupMode = AppSettings.Load().BackupMode;
     private Action? _bannerActionHandler;
     private string? _outdatedNoticeFor;
     private readonly Stopwatch _runWatch = new();
@@ -276,17 +284,28 @@ internal sealed class MainForm : Form
         // Advanced
         _advCard.ColumnCount = 1;
         _advCard.Controls.Add(_mipsBox, 0, 0);
+        var modeGroup = new FlowLayoutPanel
+        {
+            AutoSize = true, FlowDirection = FlowDirection.TopDown, WrapContents = false,
+            Margin = new Padding(0), BackColor = Color.Transparent, Dock = DockStyle.Fill,
+        };
+        modeGroup.Controls.Add(_backupModeCaption);
+        modeGroup.Controls.Add(_modeFolder);
+        modeGroup.Controls.Add(_modeZip);
+        modeGroup.Controls.Add(_modeNone);
+        _advCard.Controls.Add(modeGroup, 0, 1);
         var backupRow = new FlowLayoutPanel { AutoSize = true, WrapContents = false, Margin = new Padding(0), BackColor = Color.Transparent, Dock = DockStyle.Fill };
         backupRow.Controls.Add(_backupLabel);
         backupRow.Controls.Add(_openBackupLink);
-        _advCard.Controls.Add(backupRow, 0, 1);
+        _advCard.Controls.Add(backupRow, 0, 2);
         var backupSizeRow = new FlowLayoutPanel { AutoSize = true, WrapContents = false, Margin = new Padding(0), BackColor = Color.Transparent, Dock = DockStyle.Fill };
         backupSizeRow.Controls.Add(_backupSizeLabel);
-        _advCard.Controls.Add(backupSizeRow, 0, 2);
+        backupSizeRow.Controls.Add(_compressLink);
+        _advCard.Controls.Add(backupSizeRow, 0, 3);
         var diagRow = new FlowLayoutPanel { AutoSize = true, WrapContents = false, Margin = new Padding(0), BackColor = Color.Transparent, Dock = DockStyle.Fill };
         diagRow.Controls.Add(_diagLabel);
         diagRow.Controls.Add(_diagLink);
-        _advCard.Controls.Add(diagRow, 0, 3);
+        _advCard.Controls.Add(diagRow, 0, 4);
         _advCard.Margin = new Padding(0, 14, 0, 0);
         root.Controls.Add(_advCard);
 
@@ -316,7 +335,7 @@ internal sealed class MainForm : Form
             l.Font = new Font(GlyphFont, 15f);
         }
 
-        foreach (var small in new Control[] { _subtitle, _version, _profileLink, _aboutLink, _pkgPath, _sizeDetail, _footer, _backupLabel, _backupSizeLabel, _diagLabel })
+        foreach (var small in new Control[] { _subtitle, _version, _profileLink, _aboutLink, _pkgPath, _sizeDetail, _footer, _backupLabel, _backupSizeLabel, _diagLabel, _compressLink })
         {
             small.Font = new Font("Segoe UI", 9f);
         }
@@ -352,6 +371,10 @@ internal sealed class MainForm : Form
         }
 
         _mipsBox.CheckedChanged += (_, _) => { RecomputePlans(); UpdateUi(); };
+        _modeFolder.Click += (_, _) => SetBackupMode(BackupMode.Folder);
+        _modeZip.Click += (_, _) => SetBackupMode(BackupMode.Zip);
+        _modeNone.Click += (_, _) => SetBackupMode(BackupMode.None);
+        _compressLink.LinkClicked += async (_, _) => await CompressBackupsAsync();
         _primary.Click += async (_, _) => await PrimaryClickAsync();
         _restore.Click += async (_, _) => await RestoreAsync();
         _advancedLink.LinkClicked += (_, _) => _advCard.Visible = !_advCard.Visible;
@@ -462,15 +485,16 @@ internal sealed class MainForm : Form
         _cat.Invalidate();
         _backupLabel.ForeColor = _t.TextSecondary;
         _backupSizeLabel.ForeColor = _t.TextSecondary;
+        _backupModeCaption.ForeColor = _t.TextSecondary;
         _diagLabel.ForeColor = _t.TextSecondary;
         _bannerText.ForeColor = _t.Text;
 
-        foreach (var l in new Control[] { _pkgGlyph, _pkgTitle, _pkgPath, _sizeLeft, _sizeRight, _sizeDetail, _backupLabel, _backupSizeLabel, _diagLabel, _bannerGlyph, _bannerText })
+        foreach (var l in new Control[] { _pkgGlyph, _pkgTitle, _pkgPath, _sizeLeft, _sizeRight, _sizeDetail, _backupLabel, _backupSizeLabel, _backupModeCaption, _diagLabel, _bannerGlyph, _bannerText })
         {
             l.BackColor = Color.Transparent;
         }
 
-        foreach (var link in new[] { _advancedLink, _detailsLink, _aboutLink, _profileLink, _openBackupLink, _diagLink, _bannerAction, _bannerClose })
+        foreach (var link in new[] { _advancedLink, _detailsLink, _aboutLink, _profileLink, _openBackupLink, _diagLink, _compressLink, _bannerAction, _bannerClose })
         {
             link.LinkColor = _t.Accent;
             link.ActiveLinkColor = _t.AccentHover;
@@ -479,9 +503,12 @@ internal sealed class MainForm : Form
             link.BackColor = Color.Transparent;
         }
 
-        _mipsBox.Theme = _t;
-        _mipsBox.CanvasColor = _t.Card;
-        _mipsBox.Invalidate();
+        foreach (var option in new[] { _mipsBox, _modeFolder, _modeZip, _modeNone })
+        {
+            option.Theme = _t;
+            option.CanvasColor = _t.Card;
+            option.Invalidate();
+        }
 
         foreach (var tile in _tiles)
         {
@@ -765,7 +792,7 @@ internal sealed class MainForm : Form
 
         if (_status.Kind == PackageKind.Interrupted)
         {
-            return PrimaryMode.Restore;
+            return _status.Repairable is not null ? PrimaryMode.Repair : PrimaryMode.Restore;
         }
 
         return _plan.ToProcess.Any() ? PrimaryMode.Downscale : PrimaryMode.NothingToDo;
@@ -805,7 +832,8 @@ internal sealed class MainForm : Form
                     case PackageKind.DownscaledByTool:
                         SetGlyph(_pkgGlyph, GlyphOk, _t.Accent);
                         string when = _status.WhenUtc is { } w ? $" on {w.ToLocalTime():yyyy-MM-dd}" : string.Empty;
-                        _pkgTitle.Text = $"{name} · {size} · downscaled to {_status.Target} px{when}";
+                        _pkgTitle.Text = $"{name} · {size} · downscaled to {_status.Target} px{when}" +
+                                         (_status.LastRunWithoutBackup ? " · no backup" : string.Empty);
                         break;
                     case PackageKind.ReducedOther:
                         SetGlyph(_pkgGlyph, GlyphInfo, _t.Warning);
@@ -813,7 +841,9 @@ internal sealed class MainForm : Form
                         break;
                     case PackageKind.Interrupted:
                         SetGlyph(_pkgGlyph, GlyphWarning, _t.Warning);
-                        _pkgTitle.Text = $"{name} · last run was interrupted, please restore";
+                        _pkgTitle.Text = _status.Repairable is not null
+                            ? $"{name} · last run was interrupted, please repair"
+                            : $"{name} · last run was interrupted, please restore";
                         break;
                 }
             }
@@ -830,10 +860,12 @@ internal sealed class MainForm : Form
         if (_runProgress is { } rp)
         {
             double f = rp.Total == 0 ? 0 : (double)rp.Done / rp.Total;
-            _sizeLeft.Text = "Downscaling";
+            _sizeLeft.Text = _progressTitle;
             _sizeRight.Text = $"{f * 100:0} %";
             _bar.Value = f;
-            _sizeDetail.Text = $"{rp.Done:N0} of {rp.Total:N0} textures";
+            _sizeDetail.Text = _progressUnit is null
+                ? "Packing the originals, then checking every file against its original"
+                : $"{rp.Done:N0} of {rp.Total:N0} {_progressUnit}";
         }
         else if (_plan is not null && _status is not null)
         {
@@ -873,6 +905,7 @@ internal sealed class MainForm : Form
             PrimaryMode.Downscale => ($"Downscale to {_target} px", true, true),
             PrimaryMode.NothingToDo => ($"Already {_target} px or smaller", false, true),
             PrimaryMode.Restore => ("Restore original", true, true),
+            PrimaryMode.Repair => ("Repair package", true, true),
             PrimaryMode.Cancel => (cancelRequested ? "Cancelling…" : "Cancel", !cancelRequested, false),
             _ => ("Please wait…", false, true),
         };
@@ -889,16 +922,31 @@ internal sealed class MainForm : Form
 
         _changeButton.Enabled = !_busy;
         _mipsBox.Enabled = !_busy;
+        _modeFolder.Checked = _backupMode == BackupMode.Folder;
+        _modeZip.Checked = _backupMode == BackupMode.Zip;
+        _modeNone.Checked = _backupMode == BackupMode.None;
+        foreach (var option in new[] { _modeFolder, _modeZip, _modeNone })
+        {
+            option.Enabled = !_busy;
+        }
+
         _backupLabel.Text = _pkg is null ? "Backup folder: –" : $"Backup folder: {BackupBase}";
         _openBackupLink.Visible = _pkg is not null && (_status?.Restorable is not null || Directory.Exists(BackupBase));
         int backups = _status?.Backups.Count ?? 0;
+        string zipNote = _status is not null && backups > 0 && _status.Backups.All(b => b.IsZip) ? " (ZIP)" : string.Empty;
         _backupSizeLabel.Text = _status is null || _scanning
             ? "Backup: –"
             : backups == 0
-                ? "Backup: none. It is created when you downscale."
+                ? _status.LastRunWithoutBackup
+                    ? "Backup: none. The last run was made without a backup."
+                    : _backupMode == BackupMode.None
+                        ? "Backup: none. No backup is made with this setting."
+                        : "Backup: none. It is created when you downscale."
                 : backups == 1
-                    ? $"Backup: {_status.BackupFiles:N0} original textures · {SizeText(_status.BackupBytes)}"
-                    : $"Backups: {backups} runs, {_status.BackupFiles:N0} original textures · {SizeText(_status.BackupBytes)}";
+                    ? $"Backup: {_status.BackupFiles:N0} original textures · {SizeText(_status.BackupBytes)}{zipNote}"
+                    : $"Backups: {backups} runs, {_status.BackupFiles:N0} original textures · {SizeText(_status.BackupBytes)}{zipNote}";
+        _compressLink.Visible = _status is not null && !_busy && !_scanning
+                                && _status.Kind != PackageKind.Interrupted && _status.Compressible.Any();
         // Key feature for disk space, so it sits next to Restore. Not offered after an interrupted run:
         // that backup is needed to repair the package.
         _deleteBackup.Text = backups > 1 ? "Delete backups" : "Delete backup";
@@ -935,12 +983,76 @@ internal sealed class MainForm : Form
             case PrimaryMode.Restore:
                 await RestoreAsync();
                 break;
+            case PrimaryMode.Repair:
+                await RepairAsync();
+                break;
             case PrimaryMode.Cancel:
                 _runCts?.Cancel();
                 Log("Cancel requested. Finishing the files in progress.");
                 UpdateUi();
                 break;
         }
+    }
+
+    private void SetBackupMode(BackupMode mode)
+    {
+        if (_busy || mode == _backupMode)
+        {
+            UpdateUi();
+            return;
+        }
+
+        if (mode == BackupMode.None)
+        {
+            string nl = Environment.NewLine;
+            string warn =
+                $"Turn the backup off?{nl}{nl}" +
+                "This is not recommended and at your own risk. The original textures are deleted when you downscale, " +
+                $"and \"Restore original\" isn't possible. To get them back, you would have to reinstall FSLTL.";
+            if (MessageBox.Show(this, warn, AppName, MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2) != DialogResult.Yes)
+            {
+                UpdateUi();
+                return;
+            }
+        }
+
+        SaveBackupMode(mode);
+        Log(mode switch
+        {
+            BackupMode.Zip => "Backup: originals are compressed into a ZIP file after downscaling.",
+            BackupMode.None => "Backup: off. Originals are deleted when you downscale.",
+            _ => "Backup: originals are moved to a backup folder.",
+        });
+        UpdateUi();
+    }
+
+    private void SaveBackupMode(BackupMode mode)
+    {
+        _backupMode = mode;
+        var settings = AppSettings.Load();
+        settings.BackupMode = mode;
+        settings.BackupModeChosen = true;
+        settings.Save();
+    }
+
+    /// <summary>Before the very first downscale the user picks how the originals are kept. Returns false on Cancel.</summary>
+    private bool AskBackupModeOnce()
+    {
+        if (AppSettings.Load().BackupModeChosen)
+        {
+            return true;
+        }
+
+        using var dlg = new BackupChoiceForm(_t, Icon);
+        if (dlg.ShowDialog(this) != DialogResult.OK)
+        {
+            return false;
+        }
+
+        SaveBackupMode(dlg.Mode);
+        Log($"Backup mode chosen: {dlg.Mode}. It can be changed under Advanced options.");
+        UpdateUi();
+        return true;
     }
 
     private async Task RunAsync()
@@ -950,18 +1062,28 @@ internal sealed class MainForm : Form
             return;
         }
 
+        if (!AskBackupModeOnce())
+        {
+            return;
+        }
+
         var pkg = _pkg;
         var plan = _plan;
+        var mode = _backupMode;
         string backupBase = BackupBase;
         long total = _status.PackageSize;
+        bool hasBackups = _status.Backups.Count > 0;
 
         try
         {
             SystemChecks.EnsureSimulatorNotRunning();
-            var (required, available) = SystemChecks.CheckSpace(pkg.Root, backupBase, plan);
+            var (required, available) = SystemChecks.CheckSpace(pkg.Root, backupBase, plan, mode);
             if (available < required)
             {
-                throw new UserException($"There isn't enough free disk space. Needed: {Gb1(required)}, available: {Gb1(available)}.");
+                string hint = mode == BackupMode.None
+                    ? string.Empty
+                    : $"{Environment.NewLine}{Environment.NewLine}Under \"Advanced options\" you can choose a ZIP backup or no backup, which need less space.";
+                throw new UserException($"There isn't enough free disk space. Needed: {Gb1(required)}, available: {Gb1(available)}.{hint}");
             }
         }
         catch (UserException ex)
@@ -970,12 +1092,25 @@ internal sealed class MainForm : Form
             return;
         }
 
+        string nl = Environment.NewLine;
+        string backupText = mode switch
+        {
+            BackupMode.Zip =>
+                $"Originals are moved to:{nl}{backupBase}{nl}and then compressed into a ZIP file. This takes a few extra minutes.",
+            BackupMode.None =>
+                "No backup: the original textures are deleted. \"Restore original\" won't be possible. " +
+                $"To get the full-size textures back, you would have to reinstall FSLTL." +
+                (hasBackups ? $"{nl}{nl}Your existing backup can't restore the package after this run either. You can delete it afterwards." : string.Empty),
+            _ => $"Originals are moved to:{nl}{backupBase}",
+        };
         string question =
-            $"Downscale {plan.ToProcess.Count():N0} textures to {plan.Target} px?{Environment.NewLine}{Environment.NewLine}" +
-            $"Package size: {Gb1(total)} → {Gb1(total - plan.Saving)}{Environment.NewLine}{Environment.NewLine}" +
-            $"Originals are moved to:{Environment.NewLine}{backupBase}{Environment.NewLine}{Environment.NewLine}" +
+            $"Downscale {plan.ToProcess.Count():N0} textures to {plan.Target} px?{nl}{nl}" +
+            $"Package size: {Gb1(total)} → {Gb1(total - plan.Saving)}{nl}{nl}" +
+            $"{backupText}{nl}{nl}" +
             "Keep MSFS closed until the tool has finished.";
-        if (MessageBox.Show(this, question, AppName, MessageBoxButtons.OKCancel, MessageBoxIcon.Question) != DialogResult.OK)
+        var icon = mode == BackupMode.None ? MessageBoxIcon.Warning : MessageBoxIcon.Question;
+        var defaultButton = mode == BackupMode.None ? MessageBoxDefaultButton.Button2 : MessageBoxDefaultButton.Button1;
+        if (MessageBox.Show(this, question, AppName, MessageBoxButtons.OKCancel, icon, defaultButton) != DialogResult.OK)
         {
             return;
         }
@@ -985,7 +1120,7 @@ internal sealed class MainForm : Form
         _runCts = runCts;
         var ct = runCts.Token;
         _busy = true;
-        _runProgress = (0, plan.ToProcess.Count());
+        SetProgress("Downscaling", "textures", (0, plan.ToProcess.Count()));
         _runWatch.Restart();
         UpdateUi();
 
@@ -1002,7 +1137,7 @@ internal sealed class MainForm : Form
         try
         {
             var result = await Task.Run(() =>
-                Runner.Execute(pkg, plan, backupBase, msg => ((IProgress<string>)logProgress).Report(msg), ct, barProgress));
+                Runner.Execute(pkg, plan, backupBase, msg => ((IProgress<string>)logProgress).Report(msg), ct, barProgress, mode));
             var check = await Task.Run(() => Verifier.Run(pkg));
             _runWatch.Stop();
             string took = _runWatch.Elapsed.ToString(@"m\:ss", CultureInfo.InvariantCulture);
@@ -1015,32 +1150,232 @@ internal sealed class MainForm : Form
                 Log($"  Error: {e}");
             }
 
+            // ZIP: pack the originals now. Not after a cancel, the user wants to stop.
+            string backupNote = mode == BackupMode.None ? " No backup was kept." : string.Empty;
+            bool zipFailed = false;
+            if (mode == BackupMode.Zip && result.Replaced > 0 && !ct.IsCancellationRequested
+                && BackupSession.TryLoad(result.SessionDir) is { } session)
+            {
+                var (before, after, error) = await CompressSessionsAsync([session], ct);
+                if (error is null)
+                {
+                    backupNote = $" The backup was compressed from {SizeText(before)} to {SizeText(after)}.";
+                }
+                else
+                {
+                    zipFailed = true;
+                    backupNote = $" The backup couldn't be compressed ({error}). It stays as a folder.";
+                }
+            }
+
             if (result.Status == "completed" && result.Failed == 0 && layoutOk)
             {
-                ShowBanner(GlyphOk, _t.Success, _t.SuccessSoft,
-                    $"Done. {result.Replaced:N0} textures were downscaled to {plan.Target} px in {took} min. You can start MSFS now.");
+                ShowBanner(zipFailed ? GlyphInfo : GlyphOk, zipFailed ? _t.Warning : _t.Success, zipFailed ? _t.WarningSoft : _t.SuccessSoft,
+                    $"Done. {result.Replaced:N0} textures were downscaled to {plan.Target} px in {took} min.{backupNote} You can start MSFS now.");
             }
             else if (result.Status == "cancelled")
             {
                 ShowBanner(GlyphInfo, _t.Warning, _t.WarningSoft,
-                    $"Cancelled. {result.Replaced:N0} textures were already downscaled. The package works as it is, or you can restore the original.");
+                    $"Cancelled. {result.Replaced:N0} textures were already downscaled. The package works as it is" +
+                    (mode == BackupMode.None ? "." : ", or you can restore the original."));
             }
             else
             {
                 ShowBanner(GlyphWarning, _t.Warning, _t.WarningSoft,
-                    $"Finished with {result.Failed:N0} problems. The package works as it is. Open Details for more, or restore the original.");
+                    $"Finished with {result.Failed:N0} problems. The package works as it is. Open Details for more" +
+                    (mode == BackupMode.None ? "." : ", or restore the original."));
                 _logCard.Visible = true;
             }
         }
         catch (Exception ex)
         {
-            ShowError("The run failed. Use \"Restore original\" to undo the changes.", ex);
+            ShowError(mode == BackupMode.None
+                ? "The run failed. Use \"Repair package\" to bring layout.json in line with the textures."
+                : "The run failed. Use \"Restore original\" to undo the changes.", ex);
         }
         finally
         {
             _runCts = null;
             runCts.Dispose();
             _runProgress = null;
+            _busy = false;
+            _ = ScanAsync();
+        }
+    }
+
+    private void SetProgress(string title, string? unit, (int Done, int Total) start)
+    {
+        _progressTitle = title;
+        _progressUnit = unit;
+        _runProgress = start;
+    }
+
+    /// <summary>
+    /// Packs the given backups into ZIP files one after the other, with progress in the size card.
+    /// The caller has set _busy. Returns the sizes before and after, or the first error.
+    /// </summary>
+    private async Task<(long Before, long After, string? Error)> CompressSessionsAsync(IReadOnlyList<BackupSession> sessions, CancellationToken ct)
+    {
+        long before = 0;
+        long after = 0;
+        var logProgress = new Progress<string>(Log);
+        foreach (var session in sessions)
+        {
+            SetProgress("Compressing backup", null, (0, 1));
+            UpdateUi();
+            var barProgress = new Progress<(int Done, int Total)>(p =>
+            {
+                if (_runProgress is not null)
+                {
+                    _runProgress = p;
+                    UpdateUi();
+                }
+            });
+
+            try
+            {
+                long size = await Task.Run(() => session.SizeBytes());
+                var watch = Stopwatch.StartNew();
+                long zipBytes = await Task.Run(() =>
+                    session.CompressToZip(msg => ((IProgress<string>)logProgress).Report(msg), barProgress, ct), ct);
+                before += size;
+                after += zipBytes;
+                Log($"Backup compressed in {watch.Elapsed.ToString(@"m\:ss", CultureInfo.InvariantCulture)} min: {SizeText(size)} → {SizeText(zipBytes)}.");
+            }
+            catch (OperationCanceledException)
+            {
+                Log("Compressing cancelled. The backup stays as a folder.");
+                return (before, after, "cancelled");
+            }
+            catch (Exception ex)
+            {
+                // Whatever went wrong, files/ is only removed after a checked ZIP file is in place.
+                Log($"Compressing failed: {ex.Message} The backup stays as a folder.");
+                _logCard.Visible = true;
+                return (before, after, ex.Message);
+            }
+            finally
+            {
+                _runProgress = null;
+            }
+        }
+
+        return (before, after, null);
+    }
+
+    /// <summary>"Compress to ZIP" under Advanced: packs existing folder backups, e.g. from version 1.2.</summary>
+    private async Task CompressBackupsAsync()
+    {
+        var status = _status;
+        if (_pkg is null || status is null || _busy || _scanning)
+        {
+            return;
+        }
+
+        var sessions = status.Compressible.ToList();
+        if (sessions.Count == 0)
+        {
+            return;
+        }
+
+        string nl = Environment.NewLine;
+        string question =
+            $"Compress the backup into a ZIP file?{nl}{nl}" +
+            $"FSLTL textures usually shrink to about a fifth of their size. This takes a few minutes. " +
+            $"Every file is checked against its original before the folder is removed.{nl}{nl}" +
+            "\"Restore original\" keeps working. It then unpacks the textures from the ZIP file.";
+        if (MessageBox.Show(this, question, AppName, MessageBoxButtons.OKCancel, MessageBoxIcon.Question) != DialogResult.OK)
+        {
+            return;
+        }
+
+        _banner.Visible = false;
+        var runCts = new CancellationTokenSource();
+        _runCts = runCts;
+        _busy = true;
+        UpdateUi();
+        try
+        {
+            var (before, after, error) = await CompressSessionsAsync(sessions, runCts.Token);
+            if (error is null)
+            {
+                ShowBanner(GlyphOk, _t.Success, _t.SuccessSoft,
+                    $"Backup compressed from {SizeText(before)} to {SizeText(after)}. {SizeText(before - after)} of disk space were freed.");
+            }
+            else
+            {
+                ShowBanner(GlyphInfo, _t.Warning, _t.WarningSoft,
+                    error == "cancelled"
+                        ? "Compressing was cancelled. The backup stays as a folder."
+                        : $"The backup couldn't be compressed ({error}). It stays as a folder and nothing was lost.");
+            }
+        }
+        finally
+        {
+            _runCts = null;
+            runCts.Dispose();
+            _busy = false;
+            _ = ScanAsync();
+        }
+    }
+
+    /// <summary>An interrupted run without backup: bring layout.json and manifest.json in line with the textures on disk.</summary>
+    private async Task RepairAsync()
+    {
+        var session = _status?.Repairable;
+        if (_pkg is null || session is null)
+        {
+            return;
+        }
+
+        var pkg = _pkg;
+        try
+        {
+            SystemChecks.EnsureSimulatorNotRunning();
+        }
+        catch (UserException ex)
+        {
+            MessageBox.Show(this, ex.Message, AppName, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+
+        string nl = Environment.NewLine;
+        string question =
+            $"The last run without backup was interrupted.{nl}{nl}" +
+            "Repair layout.json and manifest.json so they match the textures on disk? " +
+            "Textures that were already downscaled stay downscaled. You can downscale the rest afterwards.";
+        if (MessageBox.Show(this, question, AppName, MessageBoxButtons.OKCancel, MessageBoxIcon.Question) != DialogResult.OK)
+        {
+            return;
+        }
+
+        _banner.Visible = false;
+        _busy = true;
+        UpdateUi();
+        try
+        {
+            var logProgress = new Progress<string>(Log);
+            await Task.Run(() => Repairer.Repair(pkg, session, msg => ((IProgress<string>)logProgress).Report(msg)));
+            var check = await Task.Run(() => Verifier.Run(pkg));
+            bool layoutOk = check.DdsMismatches == 0 && (check.TotalMatchesEntries || check.TotalMatchesEntriesPlusMeta);
+            Log($"layout.json check: {(layoutOk ? "OK" : "PROBLEM")}.");
+            if (layoutOk)
+            {
+                ShowBanner(GlyphOk, _t.Success, _t.SuccessSoft, "The package was repaired. You can start MSFS or downscale the remaining textures.");
+            }
+            else
+            {
+                ShowBanner(GlyphWarning, _t.Warning, _t.WarningSoft,
+                    "layout.json still doesn't match the textures. Please reinstall FSLTL with its installer.");
+                _logCard.Visible = true;
+            }
+        }
+        catch (Exception ex)
+        {
+            ShowError("Repairing failed.", ex);
+        }
+        finally
+        {
             _busy = false;
             _ = ScanAsync();
         }
@@ -1068,7 +1403,11 @@ internal sealed class MainForm : Form
         string question =
             $"Put the original textures back?{Environment.NewLine}{Environment.NewLine}" +
             $"{session.Info.FilesReplaced:N0} textures, layout.json and manifest.json from the run of " +
-            $"{session.Info.StartedUtc.ToLocalTime():yyyy-MM-dd HH:mm} are restored.";
+            $"{session.Info.StartedUtc.ToLocalTime():yyyy-MM-dd HH:mm} are restored." +
+            (session.IsZip
+                ? $"{Environment.NewLine}{Environment.NewLine}The textures are unpacked from the ZIP file. This needs about " +
+                  $"{SizeText(session.Info.BytesBefore)} of free space and takes a few minutes. The ZIP file is removed afterwards."
+                : string.Empty);
         if (MessageBox.Show(this, question, AppName, MessageBoxButtons.OKCancel, MessageBoxIcon.Question) != DialogResult.OK)
         {
             return;
@@ -1076,7 +1415,16 @@ internal sealed class MainForm : Form
 
         _banner.Visible = false;
         _busy = true;
+        SetProgress(session.IsZip ? "Restoring from ZIP" : "Restoring", "original textures", (0, Math.Max(1, session.Info.FilesReplaced)));
         UpdateUi();
+        var barProgress = new Progress<(int Done, int Total)>(p =>
+        {
+            if (_runProgress is not null)
+            {
+                _runProgress = p;
+                UpdateUi();
+            }
+        });
         bool force = false;
         try
         {
@@ -1086,7 +1434,8 @@ internal sealed class MainForm : Form
                 {
                     var logProgress = new Progress<string>(Log);
                     bool f = force;
-                    int n = await Task.Run(() => Restorer.Restore(pkg, session, f, msg => ((IProgress<string>)logProgress).Report(msg)));
+                    int n = await Task.Run(() => Restorer.Restore(pkg, session, f,
+                        msg => ((IProgress<string>)logProgress).Report(msg), barProgress));
                     Log($"Restored {n:N0} files plus layout.json and manifest.json.");
                     ShowBanner(GlyphOk, _t.Success, _t.SuccessSoft, "The original textures are back.");
                     break;
@@ -1113,6 +1462,7 @@ internal sealed class MainForm : Form
         }
         finally
         {
+            _runProgress = null;
             _busy = false;
             _ = ScanAsync();
         }
@@ -1302,7 +1652,7 @@ internal sealed class MainForm : Form
             Line($"  Selected path: {pkg.SelectedPath}");
             Line($"  Real folder:   {pkg.Root}{(pkg.IsLinked ? " (linked)" : string.Empty)}");
             Line($"  Volume:        {Safe(() => PathResolver.VolumeRootOf(pkg.Root))}, free {Safe(() => Gb1(PathResolver.FreeBytes(pkg.Root)))}");
-            Line($"  Backup folder: {BackupBase}");
+            Line($"  Backup folder: {BackupBase}, mode: {_backupMode}");
             Line($"  Backup volume: {Safe(() => PathResolver.VolumeRootOf(BackupBase))}, " +
                  $"same as package: {Safe(() => PathResolver.SameVolume(pkg.Root, PathResolver.NearestExisting(BackupBase)) ? "yes" : "no")}");
             if (_status is { } st)
@@ -1317,9 +1667,14 @@ internal sealed class MainForm : Form
                 Line($"  Backups: {st.Backups.Count}, {st.BackupFiles:N0} files, {SizeText(st.BackupBytes)}" +
                      $"{(st.Outdated.Count > 0 ? $", {st.Outdated.Count} from before an FSLTL update" : string.Empty)}" +
                      $"{(st.Leftovers.Count > 0 ? $", {st.Leftovers.Count} restored runs left over" : string.Empty)}");
+                if (st.LastRunWithoutBackup)
+                {
+                    Line("  Last run: without backup");
+                }
+
                 foreach (var s in st.Backups.Concat(st.Leftovers))
                 {
-                    Line($"    {s.Dir}: {s.Info.Status}, FSLTL {s.Info.PackageVersion}, {s.Info.Target} px, " +
+                    Line($"    {s.Dir}: {s.Info.Status}, {s.Info.BackupFormat}, FSLTL {s.Info.PackageVersion}, {s.Info.Target} px, " +
                          $"{s.Info.FilesReplaced:N0} files, {s.Info.StartedUtc.ToLocalTime():yyyy-MM-dd HH:mm}, tool {s.Info.ToolVersion}");
                 }
             }
@@ -1385,24 +1740,32 @@ internal sealed class MainForm : Form
     }
 
     /// <summary>
-    /// Folders of runs that were already restored only hold a copy of the old layout.json and the journal.
-    /// They are of no use any more, so they are removed quietly. Only when no original texture is left in them.
+    /// Folders of runs that were already restored, and of old runs without backup, only hold a copy of the old
+    /// layout.json and the journal. They are of no use any more, so they are removed quietly.
+    /// Only when no original texture is left in them.
     /// </summary>
     private async Task RemoveLeftoversAsync(PackageStatus status)
     {
-        if (status.Leftovers.Count == 0 || _busy)
+        if ((status.Leftovers.Count == 0 && status.Backups.Count == 0) || _busy)
         {
             return;
         }
 
         int removed = await Task.Run(() =>
         {
+            // Finishes an interrupted compression, e.g. removes files/ once a checked ZIP file is in place.
+            foreach (var s in status.Backups.Where(b => b.Info.Status is not ("running" or "incomplete")))
+            {
+                s.TidyUp();
+            }
+
             int n = 0;
             foreach (var s in status.Leftovers)
             {
                 try
                 {
-                    if (!s.BackedUpFiles().Any())
+                    s.TidyUp();
+                    if (!s.HasOriginals)
                     {
                         s.Delete();
                         n++;
@@ -1420,7 +1783,7 @@ internal sealed class MainForm : Form
 
         if (removed > 0)
         {
-            Log($"Removed {removed} empty folder(s) of runs that were already restored.");
+            Log($"Removed {removed} empty folder(s) of runs that were already restored or made without a backup.");
         }
     }
 
